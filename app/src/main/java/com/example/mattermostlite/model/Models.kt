@@ -137,6 +137,8 @@ sealed interface FeedMutation {
 }
 
 sealed interface SocketSignal {
+    data object Opened : SocketSignal
+
     data class Hello(
         val connectionId: String,
         val sequence: Long,

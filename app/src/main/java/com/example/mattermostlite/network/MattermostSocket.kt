@@ -38,6 +38,10 @@ class MattermostSocket(
             .header("Authorization", "Bearer ${config.token}")
             .build()
         val listener = object : WebSocketListener() {
+            override fun onOpen(webSocket: WebSocket, response: Response) {
+                trySend(SocketSignal.Opened)
+            }
+
             override fun onMessage(webSocket: WebSocket, text: String) {
                 parseSignal(text)?.let { trySend(it) }
             }

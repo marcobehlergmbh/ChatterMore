@@ -18,13 +18,12 @@ import android.widget.Button
 import android.widget.EditText
 import android.widget.ImageButton
 import android.widget.ImageView
-import android.widget.MediaController
 import android.widget.ProgressBar
 import android.widget.TextView
 import android.widget.Toast
-import android.widget.VideoView
 import androidx.activity.ComponentActivity
 import androidx.activity.viewModels
+import androidx.annotation.OptIn
 import androidx.core.content.ContextCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
@@ -33,6 +32,14 @@ import androidx.core.view.isVisible
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
+import androidx.media3.common.MediaItem
+import androidx.media3.common.PlaybackException
+import androidx.media3.common.Player
+import androidx.media3.common.util.UnstableApi
+import androidx.media3.datasource.DefaultHttpDataSource
+import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import androidx.media3.ui.PlayerView
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import com.example.mattermostlite.model.ConnectionState
@@ -48,6 +55,9 @@ import com.example.mattermostlite.ui.DownloadFileName
 import com.example.mattermostlite.ui.MessageScrollAnchor
 import com.example.mattermostlite.ui.SunoPlaybackController
 import com.example.mattermostlite.ui.YouTubeVideo
+import com.example.mattermostlite.ui.VideoPlaybackErrorDetails
+import com.example.mattermostlite.ui.VideoPlaybackErrorKind
+import com.example.mattermostlite.ui.VideoPlaybackRestore
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
@@ -79,6 +89,9 @@ class MainActivity : ComponentActivity() {
     private lateinit var adapter: FeedAdapter
     private var fullscreenImageDialog: Dialog? = null
     private var fullscreenVideoDialog: Dialog? = null
+    private var activeVideoFile: FeedFile? = null
+    private var activeVideoPlayer: ExoPlayer? = null
+    private var pendingVideoRestore: VideoPlaybackRestore? = null
     private val imageLoader: MattermostImageLoader by lazy {
         (application as MattermostLiteApplication).container.imageLoader
     }
@@ -102,6 +115,7 @@ class MainActivity : ComponentActivity() {
         configureActions()
         configureFeed()
         pendingScrollAnchor = savedInstanceState?.scrollAnchor()
+        pendingVideoRestore = savedInstanceState?.videoPlaybackRestore()
         if (BuildConfig.BENCHMARK_FIXTURES) {
             viewModel.enableBenchmarkFixture(intent.getIntExtra(EXTRA_BENCHMARK_MESSAGE_COUNT, 2_000))
         }
@@ -122,6 +136,8 @@ class MainActivity : ComponentActivity() {
 
     override fun onStop() {
         pendingScrollAnchor = captureScrollAnchor() ?: pendingScrollAnchor
+        pendingVideoRestore = captureVideoPlayback()
+        fullscreenVideoDialog?.dismiss()
         sunoController.stop()
         viewModel.setForeground(false)
         super.onStop()
@@ -133,6 +149,7 @@ class MainActivity : ComponentActivity() {
             outState.putInt(STATE_SCROLL_POSITION, anchor.fallbackPosition)
             outState.putInt(STATE_SCROLL_OFFSET, anchor.topOffset)
         }
+        captureVideoPlayback()?.writeTo(outState)
         super.onSaveInstanceState(outState)
     }
 
@@ -347,6 +364,7 @@ class MainActivity : ComponentActivity() {
                         }
                     }
                 }
+                restorePendingVideo()
             }
         }
     }
@@ -481,42 +499,110 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun showVideo(file: FeedFile) {
-        val source = imageLoader.mediaSource(file.fileId) ?: return
+    @OptIn(markerClass = [UnstableApi::class])
+    private fun showVideo(
+        file: FeedFile,
+        startPositionMs: Long = 0L,
+        playWhenReady: Boolean = true,
+    ): Boolean {
+        val source = imageLoader.mediaSource(file.fileId) ?: return false
         fullscreenVideoDialog?.dismiss()
         val dialog = Dialog(this, R.style.Theme_MattermostLite_FullscreenImage).apply {
             setContentView(R.layout.dialog_video)
         }
-        val videoView = dialog.findViewById<VideoView>(R.id.fullscreenVideo)
+        val playerView = dialog.findViewById<PlayerView>(R.id.fullscreenVideo)
         val progress = dialog.findViewById<ProgressBar>(R.id.fullscreenVideoProgress)
-        val error = dialog.findViewById<TextView>(R.id.fullscreenVideoError)
+        val errorPanel = dialog.findViewById<View>(R.id.fullscreenVideoErrorPanel)
+        val errorMessage = dialog.findViewById<TextView>(R.id.fullscreenVideoError)
+        val errorDetails = dialog.findViewById<TextView>(R.id.fullscreenVideoErrorDetails)
+        val retry = dialog.findViewById<Button>(R.id.retryFullscreenVideo)
         dialog.findViewById<TextView>(R.id.fullscreenVideoTitle).text = file.name
         dialog.findViewById<ImageButton>(R.id.closeFullscreenVideo).setOnClickListener {
             dialog.dismiss()
         }
-        val controller = MediaController(this).apply { setAnchorView(videoView) }
-        videoView.setMediaController(controller)
-        videoView.setOnPreparedListener {
-            progress.isVisible = false
-            videoView.start()
+        val httpDataSourceFactory = DefaultHttpDataSource.Factory()
+            .setConnectTimeoutMs(VIDEO_CONNECT_TIMEOUT_MS)
+            .setReadTimeoutMs(VIDEO_READ_TIMEOUT_MS)
+            .setDefaultRequestProperties(source.headers)
+        val mediaSourceFactory = DefaultMediaSourceFactory(this)
+            .setDataSourceFactory(httpDataSourceFactory)
+        val player = ExoPlayer.Builder(this)
+            .setMediaSourceFactory(mediaSourceFactory)
+            .build()
+        playerView.player = player
+
+        fun preparePlayback(positionMs: Long, autoPlay: Boolean) {
+            errorPanel.isVisible = false
+            progress.isVisible = true
+            player.setMediaItem(MediaItem.fromUri(source.uri), positionMs.coerceAtLeast(0L))
+            player.prepare()
+            player.playWhenReady = autoPlay
         }
-        videoView.setOnErrorListener { _, _, _ ->
-            progress.isVisible = false
-            error.isVisible = true
-            true
-        }
+        player.addListener(object : Player.Listener {
+            override fun onPlaybackStateChanged(playbackState: Int) {
+                when (playbackState) {
+                    Player.STATE_BUFFERING -> progress.isVisible = true
+                    Player.STATE_READY, Player.STATE_ENDED -> progress.isVisible = false
+                    Player.STATE_IDLE -> Unit
+                }
+            }
+
+            override fun onPlayerError(error: PlaybackException) {
+                progress.isVisible = false
+                val failure = VideoPlaybackErrorDetails.from(error)
+                errorMessage.setText(
+                    when (failure.kind) {
+                        VideoPlaybackErrorKind.NETWORK -> R.string.video_error_network
+                        VideoPlaybackErrorKind.MALFORMED -> R.string.video_error_malformed
+                        VideoPlaybackErrorKind.UNSUPPORTED -> R.string.video_error_unsupported
+                        VideoPlaybackErrorKind.UNKNOWN -> R.string.video_load_failed
+                    },
+                )
+                errorDetails.text = failure.technicalDetails
+                errorPanel.isVisible = true
+            }
+        })
+        retry.setOnClickListener { preparePlayback(player.currentPosition, true) }
         dialog.show()
         dialog.window?.setLayout(
             ViewGroup.LayoutParams.MATCH_PARENT,
             ViewGroup.LayoutParams.MATCH_PARENT,
         )
         fullscreenVideoDialog = dialog
+        activeVideoFile = file
+        activeVideoPlayer = player
         dialog.setOnDismissListener {
-            videoView.stopPlayback()
-            if (fullscreenVideoDialog === dialog) fullscreenVideoDialog = null
+            playerView.player = null
+            player.release()
+            if (fullscreenVideoDialog === dialog) {
+                fullscreenVideoDialog = null
+                activeVideoFile = null
+                activeVideoPlayer = null
+            }
         }
-        videoView.setVideoURI(source.uri, source.headers)
-        videoView.requestFocus()
+        preparePlayback(startPositionMs, playWhenReady)
+        playerView.requestFocus()
+        return true
+    }
+
+    private fun restorePendingVideo() {
+        val restore = pendingVideoRestore ?: return
+        pendingVideoRestore = null
+        messageList.post {
+            if (!showVideo(restore.file, restore.safePositionMs, restore.playWhenReady)) {
+                pendingVideoRestore = restore
+            }
+        }
+    }
+
+    private fun captureVideoPlayback(): VideoPlaybackRestore? {
+        val player = activeVideoPlayer
+        val file = activeVideoFile
+        return if (player != null && file != null) {
+            VideoPlaybackRestore(file, player.currentPosition, player.playWhenReady)
+        } else {
+            pendingVideoRestore
+        }
     }
 
     private fun enqueueDownload(file: FeedFile) {
@@ -582,6 +668,30 @@ class MainActivity : ComponentActivity() {
         )
     }
 
+    private fun Bundle.videoPlaybackRestore(): VideoPlaybackRestore? {
+        val fileId = getString(STATE_VIDEO_FILE_ID)?.takeIf(String::isNotBlank) ?: return null
+        return VideoPlaybackRestore(
+            file = FeedFile(
+                fileId = fileId,
+                name = getString(STATE_VIDEO_FILE_NAME).orEmpty().ifBlank { fileId },
+                mimeType = getString(STATE_VIDEO_MIME_TYPE).orEmpty()
+                    .ifBlank { "application/octet-stream" },
+                sizeBytes = getLong(STATE_VIDEO_SIZE_BYTES, -1L),
+            ),
+            positionMs = getLong(STATE_VIDEO_POSITION_MS, 0L),
+            playWhenReady = getBoolean(STATE_VIDEO_PLAY_WHEN_READY, true),
+        )
+    }
+
+    private fun VideoPlaybackRestore.writeTo(bundle: Bundle) {
+        bundle.putString(STATE_VIDEO_FILE_ID, file.fileId)
+        bundle.putString(STATE_VIDEO_FILE_NAME, file.name)
+        bundle.putString(STATE_VIDEO_MIME_TYPE, file.mimeType)
+        bundle.putLong(STATE_VIDEO_SIZE_BYTES, file.sizeBytes)
+        bundle.putLong(STATE_VIDEO_POSITION_MS, safePositionMs)
+        bundle.putBoolean(STATE_VIDEO_PLAY_WHEN_READY, playWhenReady)
+    }
+
     private fun scrollToBottom(smooth: Boolean) {
         val last = adapter.itemCount - 1
         if (last < 0) return
@@ -611,9 +721,17 @@ class MainActivity : ComponentActivity() {
     }
 
     private companion object {
+        const val VIDEO_CONNECT_TIMEOUT_MS = 10_000
+        const val VIDEO_READ_TIMEOUT_MS = 20_000
         const val EXTRA_BENCHMARK_MESSAGE_COUNT = "benchmark_message_count"
         const val STATE_SCROLL_ITEM_KEY = "scroll_item_key"
         const val STATE_SCROLL_POSITION = "scroll_position"
         const val STATE_SCROLL_OFFSET = "scroll_offset"
+        const val STATE_VIDEO_FILE_ID = "video_file_id"
+        const val STATE_VIDEO_FILE_NAME = "video_file_name"
+        const val STATE_VIDEO_MIME_TYPE = "video_mime_type"
+        const val STATE_VIDEO_SIZE_BYTES = "video_size_bytes"
+        const val STATE_VIDEO_POSITION_MS = "video_position_ms"
+        const val STATE_VIDEO_PLAY_WHEN_READY = "video_play_when_ready"
     }
 }

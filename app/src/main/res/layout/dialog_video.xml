@@ -1,11 +1,16 @@
 <?xml version="1.0" encoding="utf-8"?>
-<merge xmlns:android="http://schemas.android.com/apk/res/android">
+<merge xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto">
 
-    <VideoView
+    <androidx.media3.ui.PlayerView
         android:id="@+id/fullscreenVideo"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
-        android:layout_gravity="center" />
+        android:layout_gravity="center"
+        android:keepScreenOn="true"
+        app:resize_mode="fit"
+        app:show_buffering="never"
+        app:use_controller="true" />
 
     <ProgressBar
         android:id="@+id/fullscreenVideoProgress"
@@ -13,16 +18,44 @@
         android:layout_height="wrap_content"
         android:layout_gravity="center" />
 
-    <TextView
-        android:id="@+id/fullscreenVideoError"
-        android:layout_width="wrap_content"
+    <LinearLayout
+        android:id="@+id/fullscreenVideoErrorPanel"
+        android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_gravity="center"
-        android:padding="24dp"
-        android:text="@string/video_load_failed"
-        android:textColor="@color/text_primary"
-        android:textSize="16sp"
-        android:visibility="gone" />
+        android:gravity="center"
+        android:orientation="vertical"
+        android:padding="32dp"
+        android:visibility="gone">
+
+        <TextView
+            android:id="@+id/fullscreenVideoError"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:gravity="center"
+            android:text="@string/video_load_failed"
+            android:textColor="@color/text_primary"
+            android:textSize="17sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/fullscreenVideoErrorDetails"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:fontFamily="monospace"
+            android:gravity="center"
+            android:textColor="@color/text_secondary"
+            android:textIsSelectable="true"
+            android:textSize="12sp" />
+
+        <Button
+            android:id="@+id/retryFullscreenVideo"
+            android:layout_width="wrap_content"
+            android:layout_height="48dp"
+            android:layout_marginTop="20dp"
+            android:text="@string/retry_video" />
+    </LinearLayout>
 
     <TextView
         android:id="@+id/fullscreenVideoTitle"

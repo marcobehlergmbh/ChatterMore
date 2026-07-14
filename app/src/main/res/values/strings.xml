@@ -32,6 +32,10 @@
     <string name="download_started">Downloading %1$s</string>
     <string name="download_failed">Unable to download %1$s</string>
     <string name="video_load_failed">This video cannot be played on this device.</string>
+    <string name="video_error_network">The video couldn’t be loaded from the server.</string>
+    <string name="video_error_malformed">This video file appears damaged or has an invalid structure.</string>
+    <string name="video_error_unsupported">This video uses a codec or encoding unavailable on this device.</string>
+    <string name="retry_video">Retry</string>
     <string name="close_video">Close video</string>
     <string name="unable_to_open_link">No app is available to open this video.</string>
     <string name="suno_loading_title">Loading song title…</string>

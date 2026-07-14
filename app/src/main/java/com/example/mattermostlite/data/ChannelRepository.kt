@@ -210,13 +210,17 @@ class ChannelRepository(
                 _connectionState.value = ConnectionState.CONNECTING
                 try {
                     socket.signals(config, socketCursor).collect { signal ->
+                        _connectionState.value = signal.connectionStateAfterReceipt()
+                        if (signal is SocketSignal.Disconnected) {
+                            throw signal.cause ?: IOException("WebSocket closed")
+                        }
+                        attempts = 0
+                        if (!socketReady.isCompleted) socketReady.complete(Unit)
                         when (signal) {
+                            SocketSignal.Opened -> Unit
                             is SocketSignal.Hello -> {
                                 val oldConnectionId = socketCursor?.connectionId
                                 socketCursor = SocketCursor(signal.connectionId, signal.sequence + 1)
-                                _connectionState.value = ConnectionState.CONNECTED
-                                attempts = 0
-                                if (!socketReady.isCompleted) socketReady.complete(Unit)
                                 if (!oldConnectionId.isNullOrBlank() && oldConnectionId != signal.connectionId) {
                                     scope.launch { refreshLatestSafely() }
                                 }
@@ -232,7 +236,7 @@ class ChannelRepository(
                                     }
                                 }
                             }
-                            is SocketSignal.Disconnected -> throw signal.cause ?: IOException("WebSocket closed")
+                            is SocketSignal.Disconnected -> error("Handled before signal dispatch")
                         }
                     }
                 } catch (_: Exception) {

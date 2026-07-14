@@ -9,6 +9,24 @@ import org.junit.Test
 
 class MattermostJsonTest {
     @Test
+    fun `parses Mattermost hello event used for the resume cursor`() {
+        val signal = MattermostSocket(OkHttpClient()).parseSignal(
+            """
+            {
+              "event":"hello",
+              "seq":4,
+              "data":{"server_version":"11.7.2","connection_id":"connection-1"}
+            }
+            """.trimIndent(),
+        )
+
+        assertTrue(signal is SocketSignal.Hello)
+        signal as SocketSignal.Hello
+        assertEquals("connection-1", signal.connectionId)
+        assertEquals(4L, signal.sequence)
+    }
+
+    @Test
     fun `parses team needed for separate channel resolution`() {
         val team = parseTeam(
             """{"id":"team-id","name":"engineering","display_name":"Engineering Team"}""",
