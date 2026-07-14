@@ -43,6 +43,25 @@ data class MattermostPost(
     val rootId: String,
     val type: String,
     val pendingPostId: String,
+    val fileIds: List<String> = emptyList(),
+    val files: List<MattermostFile> = emptyList(),
+)
+
+data class MattermostFile(
+    val id: String,
+    val name: String,
+    val mimeType: String,
+    val width: Int,
+    val height: Int,
+    val hasPreviewImage: Boolean,
+)
+
+data class FeedImage(
+    val fileId: String,
+    val name: String,
+    val width: Int,
+    val height: Int,
+    val hasPreviewImage: Boolean,
 )
 
 data class PostPage(
@@ -71,6 +90,7 @@ data class FeedItem(
     val createAt: Long,
     val updateAt: Long,
     val deliveryState: DeliveryState,
+    val images: List<FeedImage> = emptyList(),
 )
 
 enum class ConnectionState {

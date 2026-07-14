@@ -254,6 +254,24 @@ class ChannelRepository(
         socketCursor = socketCursor?.copy(nextSequence = signal.sequence + 1)
         emitAll(feedMutex.withLock { feed.merge(listOf(signal.post)) })
 
+        if (signal.post.fileIds.isNotEmpty() && signal.post.files.isEmpty() && signal.post.deleteAt == 0L) {
+            scope.launch {
+                runCatching { api.filesForPost(config, signal.post.id) }.getOrNull()
+                    ?.takeIf { it.isNotEmpty() }
+                    ?.let { files ->
+                        emitAll(
+                            feedMutex.withLock {
+                                if (feed.isCurrent(signal.post)) {
+                                    feed.merge(listOf(signal.post.copy(files = files)))
+                                } else {
+                                    emptyList()
+                                }
+                            },
+                        )
+                    }
+            }
+        }
+
         val missing = feedMutex.withLock { feed.missingUserIds(listOf(signal.post)) }
         if (missing.isNotEmpty()) {
             scope.launch {

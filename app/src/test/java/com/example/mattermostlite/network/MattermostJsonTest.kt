@@ -52,6 +52,29 @@ class MattermostJsonTest {
     }
 
     @Test
+    fun `parses attached image metadata from a post`() {
+        val post = parsePost(
+            """
+            {
+              "id":"post","channel_id":"c","user_id":"u","message":"","create_at":1,
+              "file_ids":["image-id","document-id"],
+              "metadata":{"files":[
+                {"id":"image-id","name":"photo.jpg","mime_type":"image/jpeg","width":1600,"height":900,"has_preview_image":true},
+                {"id":"document-id","name":"notes.pdf","mime_type":"application/pdf","width":0,"height":0}
+              ]}
+            }
+            """.trimIndent(),
+        )
+
+        assertEquals(listOf("image-id", "document-id"), post.fileIds)
+        assertEquals(2, post.files.size)
+        assertEquals("image/jpeg", post.files.first().mimeType)
+        assertEquals(1600, post.files.first().width)
+        assertEquals(900, post.files.first().height)
+        assertTrue(post.files.first().hasPreviewImage)
+    }
+
+    @Test
     fun `parses posted websocket envelope`() {
         val socket = MattermostSocket(OkHttpClient())
         val signal = socket.parseSignal(

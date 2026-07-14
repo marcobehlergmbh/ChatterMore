@@ -4,6 +4,7 @@ import android.graphics.Paint
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
+import android.view.ViewStub
 import android.widget.TextView
 import android.util.TypedValue
 import android.util.LruCache
@@ -11,17 +12,22 @@ import androidx.core.content.ContextCompat
 import androidx.recyclerview.widget.RecyclerView
 import com.example.mattermostlite.R
 import com.example.mattermostlite.model.DeliveryState
+import com.example.mattermostlite.model.FeedImage
 import com.example.mattermostlite.model.FeedItem
+import com.example.mattermostlite.network.MattermostImageLoader
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
+import kotlin.math.roundToInt
 
 class FeedAdapter(
     private val onRetry: (String) -> Unit,
+    private val onImageClick: (FeedImage) -> Unit,
+    private val imageLoader: MattermostImageLoader,
 ) : RecyclerView.Adapter<FeedAdapter.MessageViewHolder>() {
     private val items = mutableListOf<FeedItem>()
     private val positions = mutableMapOf<String, Int>()
-    private val timeFormatter = DateTimeFormatter.ofPattern("MMM d, HH:mm")
+    private val timeFormatter = DateTimeFormatter.ofPattern("HH:mm")
         .withZone(ZoneId.systemDefault())
     private val timeLabels = LruCache<Long, String>(2_048)
 
@@ -39,7 +45,15 @@ class FeedAdapter(
     }
 
     override fun onBindViewHolder(holder: MessageViewHolder, position: Int) {
-        holder.bind(items[position])
+        holder.bind(
+            item = items[position],
+            isContinuation = MessageGrouping.isContinuation(items.getOrNull(position - 1), items[position]),
+        )
+    }
+
+    override fun onViewRecycled(holder: MessageViewHolder) {
+        holder.recycle()
+        super.onViewRecycled(holder)
     }
 
     fun replace(newItems: List<FeedItem>) {
@@ -56,6 +70,7 @@ class FeedAdapter(
         items.addAll(0, newItems)
         rebuildPositions()
         notifyItemRangeInserted(0, newItems.size)
+        if (newItems.size < items.size) notifyItemChanged(newItems.size, PAYLOAD_GROUPING)
     }
 
     fun insert(index: Int, item: FeedItem) {
@@ -63,6 +78,7 @@ class FeedAdapter(
         items.add(target, item)
         rebuildPositions(target)
         notifyItemInserted(target)
+        if (target + 1 < items.size) notifyItemChanged(target + 1, PAYLOAD_GROUPING)
     }
 
     fun update(previousKey: String, item: FeedItem) {
@@ -70,7 +86,7 @@ class FeedAdapter(
         items[index] = item
         positions.remove(previousKey)
         positions[item.key] = index
-        notifyItemChanged(index, PAYLOAD_CONTENT)
+        notifyItemRangeChanged(index, minOf(2, items.size - index), PAYLOAD_CONTENT)
     }
 
     fun remove(key: String) {
@@ -79,6 +95,7 @@ class FeedAdapter(
         positions.remove(key)
         rebuildPositions(index)
         notifyItemRemoved(index)
+        if (index < items.size) notifyItemChanged(index, PAYLOAD_GROUPING)
     }
 
     fun itemAt(position: Int): FeedItem? = items.getOrNull(position)
@@ -91,18 +108,50 @@ class FeedAdapter(
     }
 
     inner class MessageViewHolder(view: View) : RecyclerView.ViewHolder(view) {
+        private val header = view.findViewById<View>(R.id.messageHeader)
         private val author = view.findViewById<TextView>(R.id.messageAuthor)
         private val time = view.findViewById<TextView>(R.id.messageTime)
         private val body = view.findViewById<TextView>(R.id.messageBody)
+        private val imageStub = view.findViewById<ViewStub>(R.id.messageImagesStub)
+        private var images: MessageImageGridView? = null
         private val state = view.findViewById<TextView>(R.id.messageState)
         private val bodyPaintFlags = body.paintFlags
+        private val horizontalPadding = view.paddingLeft
+        private val regularVerticalPadding = (7f * view.resources.displayMetrics.density).roundToInt()
+        private val groupedVerticalPadding = (2f * view.resources.displayMetrics.density).roundToInt()
+        private val regularMinHeight = (56f * view.resources.displayMetrics.density).roundToInt()
+        private var boundAsContinuation: Boolean? = null
 
-        fun bind(item: FeedItem) {
-            author.text = item.author
-            time.text = timeLabels.get(item.createAt) ?: timeFormatter
-                .format(Instant.ofEpochMilli(item.createAt))
-                .also { timeLabels.put(item.createAt, it) }
+        fun bind(item: FeedItem, isContinuation: Boolean) {
+            if (boundAsContinuation != isContinuation) {
+                boundAsContinuation = isContinuation
+                header.visibility = if (isContinuation) View.GONE else View.VISIBLE
+                val verticalPadding = if (isContinuation) groupedVerticalPadding else regularVerticalPadding
+                itemView.minimumHeight = if (isContinuation) 0 else regularMinHeight
+                itemView.setPadding(horizontalPadding, verticalPadding, horizontalPadding, verticalPadding)
+            }
+            if (!isContinuation) {
+                author.text = item.author
+                val minute = item.createAt / MessageGrouping.MINUTE_MS
+                time.text = timeLabels.get(minute) ?: timeFormatter
+                    .format(Instant.ofEpochMilli(minute * MessageGrouping.MINUTE_MS))
+                    .also { timeLabels.put(minute, it) }
+            }
             body.text = item.message
+            body.visibility = if (item.message.isBlank()) View.GONE else View.VISIBLE
+            if (item.images.isEmpty()) {
+                images?.apply {
+                    visibility = View.GONE
+                    clearImages()
+                }
+            } else {
+                val imageView = images ?: (imageStub.inflate() as MessageImageGridView).also {
+                    images = it
+                    it.onImageClick = onImageClick
+                }
+                imageView.visibility = View.VISIBLE
+                imageView.setImages(imageLoader, item.images)
+            }
             body.paintFlags = bodyPaintFlags
             state.visibility = View.GONE
             itemView.isClickable = false
@@ -129,10 +178,15 @@ class FeedAdapter(
                 }
             }
         }
+
+        fun recycle() {
+            images?.clearImages()
+        }
     }
 
     private companion object {
         const val PAYLOAD_CONTENT = "content"
+        const val PAYLOAD_GROUPING = "grouping"
 
         fun stableHash(value: String): Long {
             var hash = -0x340d631b7bdddcdbL

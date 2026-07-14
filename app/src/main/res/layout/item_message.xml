@@ -2,12 +2,12 @@
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
-    android:minHeight="56dp"
     android:orientation="vertical"
     android:paddingHorizontal="16dp"
     android:paddingVertical="7dp">
 
     <LinearLayout
+        android:id="@+id/messageHeader"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:gravity="center_vertical"
@@ -40,6 +40,14 @@
         android:textColor="@color/text_primary"
         android:textIsSelectable="true"
         android:textSize="16sp" />
+
+    <ViewStub
+        android:id="@+id/messageImagesStub"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="6dp"
+        android:inflatedId="@+id/messageImages"
+        android:layout="@layout/message_image_grid" />
 
     <TextView
         android:id="@+id/messageState"

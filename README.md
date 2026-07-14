@@ -11,10 +11,11 @@ A deliberately small, foreground-only Android client for one Mattermost channel.
 - Inserts outgoing messages optimistically and reconciles REST/WebSocket acknowledgements with `pending_post_id`.
 - Keeps optimistic messages visually normal for 500 ms, then underlines them until confirmed.
 - Retries failed sends without losing the message text.
+- Renders authenticated image attachments from bounded server-generated previews.
 - Refreshes the latest messages after a fling reaches the bottom or a 48dp bottom overscroll.
 - Keeps a bounded 2,000-row in-memory feed and fetches evicted history again when needed.
 
-Threads, reactions, files, Markdown rendering, multiple channels, offline storage, background sockets, and push notifications are intentionally out of scope.
+Threads, reactions, non-image files, Markdown rendering, multiple channels, offline storage, background sockets, and push notifications are intentionally out of scope.
 
 ## Build
 
@@ -43,6 +44,7 @@ The token is encrypted with an AES-GCM key held by Android Keystore. Android bac
 ## Architecture
 
 - `MattermostApi`: the small REST surface for identity, channel resolution, authors, history, and sends.
+- `MattermostImageLoader`: bounded authenticated preview requests, background downsampling, cancellation, and memory caching.
 - `MattermostSocket`: foreground WebSocket event flow with connection/sequence tracking.
 - `ChannelRepository`: socket lifecycle, cursor requests, author loading, refreshes, and optimistic sends.
 - `FeedStore`: single canonical ordered feed, deduplication, pending reconciliation, and bounded memory.

@@ -3,6 +3,7 @@ package com.example.mattermostlite.data
 import com.example.mattermostlite.model.DeliveryState
 import com.example.mattermostlite.model.FeedMutation
 import com.example.mattermostlite.model.MattermostPost
+import com.example.mattermostlite.model.MattermostFile
 import com.example.mattermostlite.model.MattermostUser
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -134,6 +135,72 @@ class FeedStoreTest {
         assertTrue(mutation is FeedMutation.Replace)
         assertEquals(listOf("post-2", null), store.snapshot().map { it.serverId })
         assertEquals("client-1", store.snapshot().last().pendingId)
+    }
+
+    @Test
+    fun `image-only post renders its images without unsupported text`() {
+        val store = FeedStore("Unsupported")
+        val imagePost = post("image", 1).copy(
+            message = "",
+            fileIds = listOf("photo"),
+            files = listOf(
+                MattermostFile(
+                    id = "photo",
+                    name = "photo.jpg",
+                    mimeType = "image/jpeg",
+                    width = 1200,
+                    height = 800,
+                    hasPreviewImage = true,
+                ),
+            ),
+        )
+
+        store.replace(listOf(imagePost), listOf(user))
+
+        val item = store.snapshot().single()
+        assertEquals("", item.message)
+        assertEquals(listOf("photo"), item.images.map { it.fileId })
+        assertEquals(1200, item.images.single().width)
+    }
+
+    @Test
+    fun `non-image attachment remains unsupported`() {
+        val store = FeedStore("Unsupported")
+        val filePost = post("file", 1).copy(
+            message = "",
+            files = listOf(
+                MattermostFile("document", "notes.pdf", "application/pdf", 0, 0, false),
+            ),
+        )
+
+        store.replace(listOf(filePost), listOf(user))
+
+        assertEquals("Unsupported", store.snapshot().single().message)
+        assertTrue(store.snapshot().single().images.isEmpty())
+    }
+
+    @Test
+    fun `metadata-light socket edit preserves an existing image`() {
+        val store = FeedStore("Unsupported")
+        val image = MattermostFile("photo", "photo.jpg", "image/jpeg", 1200, 800, true)
+        store.replace(
+            listOf(post("image", 1).copy(fileIds = listOf("photo"), files = listOf(image))),
+            listOf(user),
+        )
+
+        store.merge(
+            listOf(
+                post("image", 1).copy(
+                    message = "edited",
+                    updateAt = 2,
+                    fileIds = listOf("photo"),
+                ),
+            ),
+        )
+
+        val item = store.snapshot().single()
+        assertEquals("edited", item.message)
+        assertEquals(listOf("photo"), item.images.map { it.fileId })
     }
 
     private fun post(

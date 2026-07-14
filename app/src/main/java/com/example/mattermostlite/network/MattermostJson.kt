@@ -1,6 +1,7 @@
 package com.example.mattermostlite.network
 
 import com.example.mattermostlite.model.MattermostChannel
+import com.example.mattermostlite.model.MattermostFile
 import com.example.mattermostlite.model.MattermostPost
 import com.example.mattermostlite.model.MattermostTeam
 import com.example.mattermostlite.model.MattermostUser
@@ -78,6 +79,26 @@ internal fun parsePost(value: JsonObject): MattermostPost = MattermostPost(
     rootId = value.string("root_id"),
     type = value.string("type"),
     pendingPostId = value.string("pending_post_id"),
+    fileIds = value.stringList("file_ids"),
+    files = value["metadata"]?.objectOrNull()
+        ?.get("files")
+        ?.arrayOrNull()
+        ?.mapNotNull { it.objectOrNull()?.let(::parseFile) }
+        .orEmpty(),
+)
+
+internal fun parseFiles(json: String): List<MattermostFile> =
+    mattermostJson.parseToJsonElement(json).jsonArray.mapNotNull {
+        it.objectOrNull()?.let(::parseFile)
+    }
+
+internal fun parseFile(value: JsonObject): MattermostFile = MattermostFile(
+    id = value.string("id"),
+    name = value.string("name"),
+    mimeType = value.string("mime_type"),
+    width = value.int("width"),
+    height = value.int("height"),
+    hasPreviewImage = value.boolean("has_preview_image"),
 )
 
 internal fun parsePostPage(json: String): PostPage {
@@ -114,4 +135,15 @@ internal fun JsonObject.string(name: String): String =
 internal fun JsonObject.long(name: String): Long =
     this[name]?.jsonPrimitive?.longOrNull ?: 0L
 
+internal fun JsonObject.int(name: String): Int =
+    this[name]?.jsonPrimitive?.longOrNull?.toInt() ?: 0
+
+internal fun JsonObject.boolean(name: String): Boolean =
+    (this[name] as? JsonPrimitive)?.contentOrNull?.toBooleanStrictOrNull() ?: false
+
+internal fun JsonObject.stringList(name: String): List<String> =
+    this[name]?.arrayOrNull()?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull }.orEmpty()
+
 internal fun JsonElement.objectOrNull(): JsonObject? = this as? JsonObject
+
+internal fun JsonElement.arrayOrNull(): JsonArray? = this as? JsonArray

@@ -2,6 +2,7 @@ package com.example.mattermostlite
 
 import android.app.Application
 import com.example.mattermostlite.network.MattermostApi
+import com.example.mattermostlite.network.MattermostImageLoader
 import com.example.mattermostlite.network.MattermostSocket
 import com.example.mattermostlite.security.SecureConfigStore
 import okhttp3.OkHttpClient
@@ -19,6 +20,7 @@ class MattermostLiteApplication : Application() {
         AppContainer(
             api = MattermostApi(client),
             socket = MattermostSocket(client),
+            imageLoader = MattermostImageLoader(this, client),
             configStore = SecureConfigStore(this),
         )
     }
@@ -27,5 +29,6 @@ class MattermostLiteApplication : Application() {
 data class AppContainer(
     val api: MattermostApi,
     val socket: MattermostSocket,
+    val imageLoader: MattermostImageLoader,
     val configStore: SecureConfigStore,
 )

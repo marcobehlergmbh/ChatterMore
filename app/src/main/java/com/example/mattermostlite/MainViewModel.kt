@@ -70,7 +70,11 @@ class MainViewModel(
         if ((_screen.value as? ScreenState.Setup)?.connecting == true) return
         _screen.value = ScreenState.Setup(config = config, connecting = true)
         viewModelScope.launch {
-            runCatching { repository.initialize(config) }
+            runCatching {
+                val normalized = container.api.normalizedConfig(config)
+                container.imageLoader.configure(normalized)
+                repository.initialize(normalized)
+            }
                 .onSuccess { (channel, _) ->
                     val normalized = container.api.normalizedConfig(config)
                     if (persist) container.configStore.save(normalized)
@@ -90,6 +94,7 @@ class MainViewModel(
 
     fun clearConnection() {
         repository.close()
+        container.imageLoader.configure(null)
         container.configStore.clear()
         _screen.value = ScreenState.Setup()
     }

@@ -1,14 +1,17 @@
 package com.example.mattermostlite
 
 import android.app.AlertDialog
+import android.app.Dialog
 import android.os.Bundle
 import android.os.SystemClock
 import android.view.MotionEvent
 import android.view.View
+import android.view.ViewGroup
 import android.view.inputmethod.InputMethodManager
 import android.widget.Button
 import android.widget.EditText
 import android.widget.ImageButton
+import android.widget.ImageView
 import android.widget.ProgressBar
 import android.widget.TextView
 import androidx.activity.ComponentActivity
@@ -26,7 +29,9 @@ import androidx.recyclerview.widget.RecyclerView
 import com.example.mattermostlite.model.ConnectionState
 import com.example.mattermostlite.model.DeliveryState
 import com.example.mattermostlite.model.FeedMutation
+import com.example.mattermostlite.model.FeedImage
 import com.example.mattermostlite.model.ServerConfig
+import com.example.mattermostlite.network.MattermostImageLoader
 import com.example.mattermostlite.ui.FeedAdapter
 import com.example.mattermostlite.ui.HistoryPrefetchPolicy
 import kotlinx.coroutines.launch
@@ -57,6 +62,10 @@ class MainActivity : ComponentActivity() {
     private lateinit var newMessagesButton: Button
     private lateinit var layoutManager: LinearLayoutManager
     private lateinit var adapter: FeedAdapter
+    private var fullscreenImageDialog: Dialog? = null
+    private val imageLoader: MattermostImageLoader by lazy {
+        (application as MattermostLiteApplication).container.imageLoader
+    }
 
     private var loadedChannel = false
     private var lastBottomRefreshAt = 0L
@@ -92,6 +101,12 @@ class MainActivity : ComponentActivity() {
     override fun onStop() {
         viewModel.setForeground(false)
         super.onStop()
+    }
+
+    override fun onDestroy() {
+        fullscreenImageDialog?.dismiss()
+        fullscreenImageDialog = null
+        super.onDestroy()
     }
 
     private fun bindViews() {
@@ -172,7 +187,11 @@ class MainActivity : ComponentActivity() {
 
     private fun configureFeed() {
         layoutManager = LinearLayoutManager(this).apply { stackFromEnd = true }
-        adapter = FeedAdapter(viewModel::retry)
+        adapter = FeedAdapter(
+            onRetry = viewModel::retry,
+            onImageClick = ::showFullscreenImage,
+            imageLoader = imageLoader,
+        )
         messageList.layoutManager = layoutManager
         messageList.adapter = adapter
         messageList.itemAnimator = null
@@ -358,6 +377,39 @@ class MainActivity : ComponentActivity() {
         if (now - lastBottomRefreshAt < 2_000) return
         lastBottomRefreshAt = now
         viewModel.refreshLatest()
+    }
+
+    private fun showFullscreenImage(image: FeedImage) {
+        fullscreenImageDialog?.dismiss()
+        val dialog = Dialog(this, R.style.Theme_MattermostLite_FullscreenImage).apply {
+            setContentView(R.layout.dialog_fullscreen_image)
+        }
+        val imageView = dialog.findViewById<ImageView>(R.id.fullscreenImage).apply {
+            contentDescription = image.name.ifBlank { getString(R.string.image_attachment) }
+        }
+        val progress = dialog.findViewById<ProgressBar>(R.id.fullscreenImageProgress)
+        val error = dialog.findViewById<TextView>(R.id.fullscreenImageError)
+        dialog.findViewById<ImageButton>(R.id.closeFullscreenImage).setOnClickListener {
+            dialog.dismiss()
+        }
+        dialog.show()
+        dialog.window?.setLayout(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.MATCH_PARENT,
+        )
+        fullscreenImageDialog = dialog
+        val request = imageLoader.loadFullscreen(image) { bitmap ->
+            progress.isVisible = false
+            if (bitmap == null) {
+                error.isVisible = true
+            } else {
+                imageView.setImageBitmap(bitmap)
+            }
+        }
+        dialog.setOnDismissListener {
+            request.cancel()
+            if (fullscreenImageDialog === dialog) fullscreenImageDialog = null
+        }
     }
 
     private fun isNearBottom(): Boolean {

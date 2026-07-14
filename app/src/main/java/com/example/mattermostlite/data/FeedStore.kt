@@ -2,6 +2,7 @@ package com.example.mattermostlite.data
 
 import com.example.mattermostlite.model.DeliveryState
 import com.example.mattermostlite.model.FeedItem
+import com.example.mattermostlite.model.FeedImage
 import com.example.mattermostlite.model.FeedMutation
 import com.example.mattermostlite.model.MattermostPost
 import com.example.mattermostlite.model.MattermostUser
@@ -173,6 +174,9 @@ class FeedStore(
 
     fun newestServerId(): String? = items.asReversed().firstNotNullOfOrNull(FeedItem::serverId)
 
+    fun isCurrent(post: MattermostPost): Boolean =
+        items.any { it.serverId == post.id && it.updateAt == post.updateAt }
+
     private fun trimToMax(retainNewest: Boolean) {
         while (items.size > maxItems) {
             val sentIndex = if (retainNewest) {
@@ -189,18 +193,42 @@ class FeedStore(
     private fun isVisible(post: MattermostPost): Boolean =
         post.id.isNotBlank() && post.rootId.isBlank() && post.deleteAt == 0L
 
-    private fun toFeedItem(post: MattermostPost, previous: FeedItem? = null): FeedItem = FeedItem(
-        key = previous?.key ?: post.pendingPostId.takeIf(String::isNotBlank)?.let(::pendingKey) ?: serverKey(post.id),
-        serverId = post.id,
-        pendingId = post.pendingPostId.ifBlank { previous?.pendingId.orEmpty() }.ifBlank { null },
-        channelId = post.channelId,
-        userId = post.userId,
-        author = users[post.userId]?.displayName ?: previous?.author ?: post.userId,
-        message = post.message.ifBlank { unsupportedMessage },
-        createAt = post.createAt,
-        updateAt = post.updateAt,
-        deliveryState = DeliveryState.SENT,
-    )
+    private fun toFeedItem(post: MattermostPost, previous: FeedItem? = null): FeedItem {
+        val images = if (post.files.isEmpty()) {
+            if (post.fileIds.isEmpty()) {
+                emptyList()
+            } else {
+                previous?.images?.filter { it.fileId in post.fileIds }.orEmpty()
+            }
+        } else {
+            post.files.mapNotNull {
+                if (it.id.isBlank() || !it.mimeType.startsWith("image/", ignoreCase = true)) {
+                    null
+                } else {
+                    FeedImage(
+                        fileId = it.id,
+                        name = it.name,
+                        width = it.width,
+                        height = it.height,
+                        hasPreviewImage = it.hasPreviewImage,
+                    )
+                }
+            }
+        }
+        return FeedItem(
+            key = previous?.key ?: post.pendingPostId.takeIf(String::isNotBlank)?.let(::pendingKey) ?: serverKey(post.id),
+            serverId = post.id,
+            pendingId = post.pendingPostId.ifBlank { previous?.pendingId.orEmpty() }.ifBlank { null },
+            channelId = post.channelId,
+            userId = post.userId,
+            author = users[post.userId]?.displayName ?: previous?.author ?: post.userId,
+            message = post.message.ifBlank { if (images.isEmpty()) unsupportedMessage else "" },
+            createAt = post.createAt,
+            updateAt = post.updateAt,
+            deliveryState = DeliveryState.SENT,
+            images = images,
+        )
+    }
 
     private fun serverKey(id: String) = "post:$id"
     private fun pendingKey(id: String) = "pending:$id"

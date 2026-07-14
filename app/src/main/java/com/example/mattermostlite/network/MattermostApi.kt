@@ -2,6 +2,7 @@ package com.example.mattermostlite.network
 
 import com.example.mattermostlite.model.ChannelNotFoundException
 import com.example.mattermostlite.model.MattermostChannel
+import com.example.mattermostlite.model.MattermostFile
 import com.example.mattermostlite.model.MattermostException
 import com.example.mattermostlite.model.MattermostPost
 import com.example.mattermostlite.model.MattermostTeam
@@ -116,6 +117,11 @@ class MattermostApi(
             ),
         )
     }
+
+    suspend fun filesForPost(config: ServerConfig, postId: String): List<MattermostFile> =
+        parseFiles(
+            execute(request(config, apiUrl(config, "posts", postId, "files", "info"))),
+        )
 
     suspend fun createPost(
         config: ServerConfig,

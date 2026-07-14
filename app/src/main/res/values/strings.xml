@@ -17,4 +17,7 @@
     <string name="send_failed">Failed. Tap to retry.</string>
     <string name="unsupported_message">Unsupported message</string>
     <string name="new_messages">New messages</string>
+    <string name="image_attachment">Image attachment</string>
+    <string name="close_fullscreen_image">Close full screen image</string>
+    <string name="image_load_failed">Unable to load image</string>
 </resources>
