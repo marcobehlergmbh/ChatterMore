@@ -6,6 +6,7 @@ import com.example.mattermostlite.model.MattermostPost
 import com.example.mattermostlite.model.MattermostTeam
 import com.example.mattermostlite.model.MattermostUser
 import com.example.mattermostlite.model.PostPage
+import com.example.mattermostlite.model.UNKNOWN_FILE_SIZE
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -99,6 +100,7 @@ internal fun parseFile(value: JsonObject): MattermostFile = MattermostFile(
     width = value.int("width"),
     height = value.int("height"),
     hasPreviewImage = value.boolean("has_preview_image"),
+    sizeBytes = value.optionalLong("size") ?: UNKNOWN_FILE_SIZE,
 )
 
 internal fun parsePostPage(json: String): PostPage {
@@ -139,6 +141,9 @@ internal fun JsonObject.string(name: String): String =
 
 internal fun JsonObject.long(name: String): Long =
     this[name]?.jsonPrimitive?.longOrNull ?: 0L
+
+internal fun JsonObject.optionalLong(name: String): Long? =
+    this[name]?.jsonPrimitive?.longOrNull
 
 internal fun JsonObject.int(name: String): Int =
     this[name]?.jsonPrimitive?.longOrNull?.toInt() ?: 0

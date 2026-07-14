@@ -1,16 +1,46 @@
 <?xml version="1.0" encoding="utf-8"?>
-<TextView xmlns:android="http://schemas.android.com/apk/res/android"
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
-    android:layout_height="48dp"
+    android:layout_height="60dp"
     android:layout_marginBottom="4dp"
     android:background="@drawable/attachment_background"
     android:clickable="true"
-    android:drawablePadding="10dp"
-    android:ellipsize="middle"
     android:focusable="true"
     android:foreground="?android:attr/selectableItemBackground"
     android:gravity="center_vertical"
-    android:maxLines="1"
-    android:paddingHorizontal="12dp"
-    android:textColor="@color/text_primary"
-    android:textSize="14sp" />
+    android:orientation="horizontal"
+    android:paddingHorizontal="12dp">
+
+    <ImageView
+        android:id="@+id/fileIcon"
+        android:layout_width="24dp"
+        android:layout_height="24dp"
+        android:contentDescription="@null"
+        android:tint="@color/mattermost_blue" />
+
+    <LinearLayout
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="12dp"
+        android:layout_weight="1"
+        android:orientation="vertical">
+
+        <TextView
+            android:id="@+id/fileName"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:ellipsize="middle"
+            android:maxLines="1"
+            android:textColor="@color/text_primary"
+            android:textSize="14sp" />
+
+        <TextView
+            android:id="@+id/fileSize"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="2dp"
+            android:maxLines="1"
+            android:textColor="@color/message_metadata"
+            android:textSize="12sp" />
+    </LinearLayout>
+</LinearLayout>

@@ -228,6 +228,7 @@ class FeedStore(
                         fileId = it.id,
                         name = it.name.ifBlank { it.id },
                         mimeType = it.mimeType.ifBlank { "application/octet-stream" },
+                        sizeBytes = it.sizeBytes,
                     )
                 }
             }

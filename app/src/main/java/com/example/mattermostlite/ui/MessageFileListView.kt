@@ -4,9 +4,9 @@ import android.content.Context
 import android.util.AttributeSet
 import android.view.LayoutInflater
 import android.view.View
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
-import androidx.core.content.ContextCompat
 import com.example.mattermostlite.R
 import com.example.mattermostlite.model.FeedFile
 
@@ -20,19 +20,21 @@ class MessageFileListView @JvmOverloads constructor(
         files.forEachIndexed { index, file ->
             val child = childAt(index)
             child.visibility = View.VISIBLE
-            child.text = file.name
-            child.contentDescription = context.getString(
+            child.findViewById<TextView>(R.id.fileName).text = file.name
+            val sizeLabel = FileSizeFormatter.format(file.sizeBytes)
+            child.findViewById<TextView>(R.id.fileSize).apply {
+                text = sizeLabel
+                visibility = if (sizeLabel == null) View.GONE else View.VISIBLE
+            }
+            val actionDescription = context.getString(
                 if (file.isVideo) R.string.play_video_file else R.string.download_file,
                 file.name,
             )
-            child.setCompoundDrawablesRelativeWithIntrinsicBounds(
-                ContextCompat.getDrawable(
-                    context,
-                    if (file.isVideo) R.drawable.ic_video else R.drawable.ic_download,
-                ),
-                null,
-                null,
-                null,
+            child.contentDescription = sizeLabel?.let {
+                context.getString(R.string.file_attachment_with_size, actionDescription, it)
+            } ?: actionDescription
+            child.findViewById<ImageView>(R.id.fileIcon).setImageResource(
+                if (file.isVideo) R.drawable.ic_video else R.drawable.ic_download,
             )
             child.setOnClickListener { onFileClick?.invoke(file) }
         }
@@ -53,10 +55,10 @@ class MessageFileListView @JvmOverloads constructor(
         }
     }
 
-    private fun childAt(index: Int): TextView {
+    private fun childAt(index: Int): View {
         while (childCount <= index) {
             LayoutInflater.from(context).inflate(R.layout.item_message_file, this, true)
         }
-        return getChildAt(index) as TextView
+        return getChildAt(index)
     }
 }

@@ -26,6 +26,7 @@
     <string name="youtube_video_preview">YouTube video preview</string>
     <string name="play_video_file">Play video %1$s</string>
     <string name="download_file">Download %1$s</string>
+    <string name="file_attachment_with_size">%1$s, %2$s</string>
     <string name="download_file_prompt">Download %1$s to the Downloads folder?</string>
     <string name="download">Download</string>
     <string name="download_started">Downloading %1$s</string>
@@ -33,4 +34,15 @@
     <string name="video_load_failed">This video cannot be played on this device.</string>
     <string name="close_video">Close video</string>
     <string name="unable_to_open_link">No app is available to open this video.</string>
+    <string name="suno_loading_title">Loading song title…</string>
+    <string name="suno_music_track">Music track</string>
+    <string name="suno_music_label">SUNO · MUSIC</string>
+    <string name="suno_loading_details">SUNO · LOADING DETAILS</string>
+    <string name="suno_starting_playback">STARTING PLAYBACK…</string>
+    <string name="suno_now_playing">NOW PLAYING · TAP TO STOP</string>
+    <string name="suno_playback_failed">COULDN’T PLAY · TAP TO RETRY</string>
+    <string name="suno_play_song">Play %1$s</string>
+    <string name="suno_stop_loading">Cancel loading this song</string>
+    <string name="suno_stop_playback">Stop %1$s</string>
+    <string name="suno_retry_playback">Retry %1$s</string>
 </resources>

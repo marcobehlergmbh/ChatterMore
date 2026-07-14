@@ -169,7 +169,7 @@ class FeedStoreTest {
         val filePost = post("file", 1).copy(
             message = "",
             files = listOf(
-                MattermostFile("document", "notes.pdf", "application/pdf", 0, 0, false),
+                MattermostFile("document", "notes.pdf", "application/pdf", 0, 0, false, 12_400_000),
             ),
         )
 
@@ -179,6 +179,7 @@ class FeedStoreTest {
         assertEquals("", item.message)
         assertTrue(item.images.isEmpty())
         assertEquals("notes.pdf", item.files.single().name)
+        assertEquals(12_400_000L, item.files.single().sizeBytes)
         assertFalse(item.files.single().isVideo)
     }
 

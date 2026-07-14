@@ -28,6 +28,7 @@ class FeedAdapter(
     private val onFileClick: (FeedFile) -> Unit,
     private val onYouTubeClick: (YouTubeVideo) -> Unit,
     private val imageLoader: MattermostImageLoader,
+    private val sunoController: SunoPlaybackController,
 ) : RecyclerView.Adapter<FeedAdapter.MessageViewHolder>() {
     private val items = mutableListOf<FeedItem>()
     private val positions = mutableMapOf<String, Int>()
@@ -40,6 +41,9 @@ class FeedAdapter(
     }
     private val youtubeMessages = object : LruCache<String, CachedYouTube>(LINK_CACHE_CHARACTERS) {
         override fun sizeOf(key: String, value: CachedYouTube): Int = key.length.coerceAtLeast(1)
+    }
+    private val sunoMessages = object : LruCache<String, CachedSuno>(LINK_CACHE_CHARACTERS) {
+        override fun sizeOf(key: String, value: CachedSuno): Int = key.length.coerceAtLeast(1)
     }
 
     init {
@@ -139,6 +143,8 @@ class FeedAdapter(
         private val youtubeStub = view.findViewById<ViewStub>(R.id.messageYouTubeStub)
         private var youtubePreview: View? = null
         private var youtubeThumbnail: ImageView? = null
+        private val sunoStub = view.findViewById<ViewStub>(R.id.messageSunoStub)
+        private var sunoPlayer: SunoPlayerView? = null
         private val filesStub = view.findViewById<ViewStub>(R.id.messageFilesStub)
         private var files: MessageFileListView? = null
         private val state = view.findViewById<TextView>(R.id.messageState)
@@ -191,6 +197,7 @@ class FeedAdapter(
             }
             body.text = linkedMessage(item.message)
             body.visibility = if (item.message.isBlank()) View.GONE else View.VISIBLE
+            bindSuno(sunoSong(item.message))
             bindYouTube(youtubeVideo(item.message))
             if (item.images.isEmpty()) {
                 images?.apply {
@@ -247,6 +254,7 @@ class FeedAdapter(
 
         fun recycle() {
             clearAvatar()
+            clearSuno()
             clearYouTube()
             images?.clearImages()
             files?.clearFiles()
@@ -296,6 +304,25 @@ class FeedAdapter(
             }
         }
 
+        private fun bindSuno(song: SunoSong?) {
+            if (song == null) {
+                clearSuno()
+                return
+            }
+            val playerView = sunoPlayer ?: (sunoStub.inflate() as SunoPlayerView).also {
+                sunoPlayer = it
+            }
+            playerView.visibility = View.VISIBLE
+            playerView.bind(sunoController, song)
+        }
+
+        private fun clearSuno() {
+            sunoPlayer?.apply {
+                clear()
+                visibility = View.GONE
+            }
+        }
+
         private fun clearYouTube() {
             youtubeRequest?.cancel()
             youtubeRequest = null
@@ -340,5 +367,13 @@ class FeedAdapter(
         }
     }
 
+    private fun sunoSong(message: String): SunoSong? {
+        sunoMessages.get(message)?.let { return it.song }
+        return SunoLinkParser.firstSong(message).also {
+            sunoMessages.put(message, CachedSuno(it))
+        }
+    }
+
     private data class CachedYouTube(val video: YouTubeVideo?)
+    private data class CachedSuno(val song: SunoSong?)
 }

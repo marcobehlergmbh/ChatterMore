@@ -13,4 +13,8 @@
     <color name="success">#56D364</color>
     <color name="warning">#E3B341</color>
     <color name="error">#FF7B72</color>
+    <color name="suno_surface">#1D1427</color>
+    <color name="suno_artwork_surface">#39204E</color>
+    <color name="suno_accent">#D29CFF</color>
+    <color name="suno_on_accent">#25102F</color>
 </resources>

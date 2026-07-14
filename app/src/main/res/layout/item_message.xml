@@ -67,6 +67,14 @@
             style="@style/TextAppearance.MattermostLite.MessageBody" />
 
         <ViewStub
+            android:id="@+id/messageSunoStub"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:inflatedId="@+id/messageSunoPlayer"
+            android:layout="@layout/message_suno_player" />
+
+        <ViewStub
             android:id="@+id/messageYouTubeStub"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"

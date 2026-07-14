@@ -46,6 +46,7 @@ import com.example.mattermostlite.ui.FeedAdapter
 import com.example.mattermostlite.ui.HistoryPrefetchPolicy
 import com.example.mattermostlite.ui.DownloadFileName
 import com.example.mattermostlite.ui.MessageScrollAnchor
+import com.example.mattermostlite.ui.SunoPlaybackController
 import com.example.mattermostlite.ui.YouTubeVideo
 import kotlinx.coroutines.launch
 
@@ -80,6 +81,10 @@ class MainActivity : ComponentActivity() {
     private var fullscreenVideoDialog: Dialog? = null
     private val imageLoader: MattermostImageLoader by lazy {
         (application as MattermostLiteApplication).container.imageLoader
+    }
+    private val sunoController: SunoPlaybackController by lazy {
+        val container = (application as MattermostLiteApplication).container
+        SunoPlaybackController(this, container.sunoResolver, lifecycleScope)
     }
 
     private var loadedChannel = false
@@ -117,6 +122,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onStop() {
         pendingScrollAnchor = captureScrollAnchor() ?: pendingScrollAnchor
+        sunoController.stop()
         viewModel.setForeground(false)
         super.onStop()
     }
@@ -135,6 +141,7 @@ class MainActivity : ComponentActivity() {
         fullscreenImageDialog = null
         fullscreenVideoDialog?.dismiss()
         fullscreenVideoDialog = null
+        sunoController.close()
         super.onDestroy()
     }
 
@@ -224,6 +231,7 @@ class MainActivity : ComponentActivity() {
             onFileClick = ::handleFileClick,
             onYouTubeClick = ::openYouTubeVideo,
             imageLoader = imageLoader,
+            sunoController = sunoController,
         )
         messageList.layoutManager = layoutManager
         messageList.adapter = adapter

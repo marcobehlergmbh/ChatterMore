@@ -62,6 +62,7 @@ data class MattermostFile(
     val width: Int,
     val height: Int,
     val hasPreviewImage: Boolean,
+    val sizeBytes: Long = UNKNOWN_FILE_SIZE,
 )
 
 data class FeedImage(
@@ -76,6 +77,7 @@ data class FeedFile(
     val fileId: String,
     val name: String,
     val mimeType: String,
+    val sizeBytes: Long = UNKNOWN_FILE_SIZE,
 ) {
     val isVideo: Boolean
         get() = mimeType.startsWith("video/", ignoreCase = true) ||
@@ -87,6 +89,8 @@ data class FeedFile(
         )
     }
 }
+
+const val UNKNOWN_FILE_SIZE = -1L
 
 data class PostPage(
     val order: List<String>,

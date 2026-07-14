@@ -60,7 +60,7 @@ class MattermostJsonTest {
               "file_ids":["image-id","document-id"],
               "metadata":{"files":[
                 {"id":"image-id","name":"photo.jpg","mime_type":"image/jpeg","width":1600,"height":900,"has_preview_image":true},
-                {"id":"document-id","name":"notes.pdf","mime_type":"application/pdf","width":0,"height":0}
+                {"id":"document-id","name":"notes.pdf","mime_type":"application/pdf","width":0,"height":0,"size":12400000}
               ]}
             }
             """.trimIndent(),
@@ -72,6 +72,7 @@ class MattermostJsonTest {
         assertEquals(1600, post.files.first().width)
         assertEquals(900, post.files.first().height)
         assertTrue(post.files.first().hasPreviewImage)
+        assertEquals(12_400_000L, post.files.last().sizeBytes)
     }
 
     @Test

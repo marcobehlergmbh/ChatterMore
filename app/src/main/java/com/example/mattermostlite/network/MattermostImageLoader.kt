@@ -18,6 +18,8 @@ import okhttp3.Request
 import okhttp3.Response
 import java.io.ByteArrayOutputStream
 import java.io.IOException
+import java.io.File
+import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.min
 import kotlin.math.roundToInt
@@ -37,6 +39,8 @@ class MattermostImageLoader(
     private val fullscreenTargetHeight: Int
     private val avatarTargetSize: Int
     private val memoryCache: LruCache<String, Bitmap>
+    private val diskCache = ImageDiskCache(File(context.filesDir, "image_cache"), MAX_DISK_CACHE_BYTES)
+    private val diskExecutor = Executors.newFixedThreadPool(DISK_CACHE_THREADS)
     private val inFlight = mutableMapOf<String, PendingLoad>()
     private val imageClient = client.newBuilder()
         .dispatcher(
@@ -73,7 +77,7 @@ class MattermostImageLoader(
         if (previous == config) return
         this.config = config
         synchronized(lock) {
-            inFlight.values.forEach { it.call.cancel() }
+            inFlight.values.forEach { it.call?.cancel() }
             inFlight.clear()
             memoryCache.evictAll()
         }
@@ -106,6 +110,7 @@ class MattermostImageLoader(
             .build()
         return loadUrl(
             key = "${requestConfig.baseUrl}|avatar|$userId",
+            diskKey = "${requestConfig.baseUrl}|avatar|$userId",
             url = url,
             authorization = "Bearer ${requestConfig.token}",
             accept = "image/*",
@@ -124,6 +129,7 @@ class MattermostImageLoader(
             .build()
         return loadUrl(
             key = "youtube|$videoId",
+            diskKey = "youtube|$videoId",
             url = url,
             authorization = null,
             accept = "image/*",
@@ -163,6 +169,7 @@ class MattermostImageLoader(
             .build()
         return loadUrl(
             key = key,
+            diskKey = "${requestConfig.baseUrl}|file|${image.fileId}|${endpoint.orEmpty()}",
             url = url,
             authorization = "Bearer ${requestConfig.token}",
             accept = "image/*",
@@ -174,6 +181,7 @@ class MattermostImageLoader(
 
     private fun loadUrl(
         key: String,
+        diskKey: String,
         url: okhttp3.HttpUrl,
         authorization: String?,
         accept: String,
@@ -189,7 +197,7 @@ class MattermostImageLoader(
         }
 
         val subscription = Subscription(key, result)
-        var callToStart: Call? = null
+        var startLoad = false
         synchronized(lock) {
             memoryCache.get(key)?.let {
                 result(it)
@@ -199,19 +207,54 @@ class MattermostImageLoader(
             if (pending != null) {
                 pending.subscriptions += subscription
             } else {
-                val call = imageClient.newCall(
-                    Request.Builder()
-                        .url(url)
-                        .apply { authorization?.let { header("Authorization", it) } }
-                        .header("Accept", accept)
-                        .build(),
-                )
-                inFlight[key] = PendingLoad(call, mutableSetOf(subscription))
-                callToStart = call
+                inFlight[key] = PendingLoad(null, mutableSetOf(subscription))
+                startLoad = true
             }
         }
-        callToStart?.enqueue(ImageCallback(key, decodeWidth, decodeHeight))
+        if (startLoad) {
+            diskExecutor.execute {
+                val cachedBytes = diskCache.read(diskKey)
+                val cachedBitmap = cachedBytes?.let { decodeSampled(it, decodeWidth, decodeHeight) }
+                if (cachedBitmap != null) {
+                    complete(key, cachedBitmap)
+                } else {
+                    if (cachedBytes != null) diskCache.remove(diskKey)
+                    startNetworkLoad(
+                        key = key,
+                        diskKey = diskKey,
+                        url = url,
+                        authorization = authorization,
+                        accept = accept,
+                        decodeWidth = decodeWidth,
+                        decodeHeight = decodeHeight,
+                    )
+                }
+            }
+        }
         return subscription
+    }
+
+    private fun startNetworkLoad(
+        key: String,
+        diskKey: String,
+        url: okhttp3.HttpUrl,
+        authorization: String?,
+        accept: String,
+        decodeWidth: Int,
+        decodeHeight: Int,
+    ) {
+        val call = imageClient.newCall(
+            Request.Builder()
+                .url(url)
+                .apply { authorization?.let { header("Authorization", it) } }
+                .header("Accept", accept)
+                .build(),
+        )
+        synchronized(lock) {
+            val pending = inFlight[key] ?: return
+            pending.call = call
+        }
+        call.enqueue(ImageCallback(key, diskKey, decodeWidth, decodeHeight))
     }
 
     private fun emptyResult(result: (Bitmap?) -> Unit): ImageRequest {
@@ -236,18 +279,25 @@ class MattermostImageLoader(
 
     private inner class ImageCallback(
         private val key: String,
+        private val diskKey: String,
         private val decodeWidth: Int,
         private val decodeHeight: Int,
     ) : Callback {
         override fun onFailure(call: Call, e: IOException) = complete(key, null)
 
         override fun onResponse(call: Call, response: Response) {
-            val bitmap = response.use {
+            val bytes = response.use {
                 if (!response.isSuccessful) return@use null
-                val bytes = response.body.readBoundedBytes(MAX_ENCODED_BYTES) ?: return@use null
-                decodeSampled(bytes, decodeWidth, decodeHeight)
+                response.body.readBoundedBytes(MAX_ENCODED_BYTES)
             }
-            complete(key, bitmap)
+            if (bytes == null) {
+                complete(key, null)
+                return
+            }
+            diskExecutor.execute {
+                diskCache.write(diskKey, bytes)
+                complete(key, decodeSampled(bytes, decodeWidth, decodeHeight))
+            }
         }
     }
 
@@ -264,14 +314,14 @@ class MattermostImageLoader(
                 pending.subscriptions.remove(this)
                 if (pending.subscriptions.isEmpty()) {
                     inFlight.remove(key)
-                    pending.call.cancel()
+                    pending.call?.cancel()
                 }
             }
         }
     }
 
     private inner class PendingLoad(
-        val call: Call,
+        var call: Call?,
         val subscriptions: MutableSet<Subscription>,
     )
 
@@ -285,6 +335,8 @@ class MattermostImageLoader(
         const val MAX_IMAGE_HEIGHT_DP = 300
         const val AVATAR_SIZE_DP = 40
         const val MAX_MEMORY_CACHE_KB = 32 * 1_024
+        const val MAX_DISK_CACHE_BYTES = 128L * 1_024L * 1_024L
+        const val DISK_CACHE_THREADS = 2
         const val MAX_ENCODED_BYTES = 24 * 1_024 * 1_024
         val EMPTY_REQUEST = ImageRequest {}
 

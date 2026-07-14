@@ -13,6 +13,8 @@ A deliberately small, foreground-only Android client for one Mattermost channel.
 - Retries failed sends without losing the message text.
 - Renders authenticated image attachments from bounded server-generated previews.
 - Renders cached user avatars and lightweight YouTube thumbnail previews.
+- Persists downloaded image bytes in a bounded app-private cache across launches.
+- Adds inline play/stop controls for shared Suno song links.
 - Streams authenticated video attachments in a full-screen player.
 - Shows other attached filenames and downloads them through Android's download manager.
 - Makes web links clickable with a regex-free, cached message parser.
