@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <dimen name="message_horizontal_padding">16dp</dimen>
+    <dimen name="message_group_vertical_spacing">8dp</dimen>
+    <dimen name="message_inner_vertical_spacing">1dp</dimen>
+    <dimen name="message_group_min_height">60dp</dimen>
+    <dimen name="message_avatar_placeholder_padding">7dp</dimen>
+</resources>
