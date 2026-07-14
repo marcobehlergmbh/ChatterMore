@@ -164,7 +164,7 @@ class FeedStoreTest {
     }
 
     @Test
-    fun `non-image attachment remains unsupported`() {
+    fun `non-image attachment exposes its filename for download`() {
         val store = FeedStore("Unsupported")
         val filePost = post("file", 1).copy(
             message = "",
@@ -175,8 +175,28 @@ class FeedStoreTest {
 
         store.replace(listOf(filePost), listOf(user))
 
-        assertEquals("Unsupported", store.snapshot().single().message)
-        assertTrue(store.snapshot().single().images.isEmpty())
+        val item = store.snapshot().single()
+        assertEquals("", item.message)
+        assertTrue(item.images.isEmpty())
+        assertEquals("notes.pdf", item.files.single().name)
+        assertFalse(item.files.single().isVideo)
+    }
+
+    @Test
+    fun `video attachment is identified for direct playback`() {
+        val store = FeedStore("Unsupported")
+        val videoPost = post("video", 1).copy(
+            message = "",
+            files = listOf(
+                MattermostFile("video", "demo.mp4", "application/octet-stream", 1920, 1080, true),
+            ),
+        )
+
+        store.replace(listOf(videoPost), listOf(user))
+
+        val file = store.snapshot().single().files.single()
+        assertEquals("demo.mp4", file.name)
+        assertTrue(file.isVideo)
     }
 
     @Test
@@ -201,6 +221,28 @@ class FeedStoreTest {
         val item = store.snapshot().single()
         assertEquals("edited", item.message)
         assertEquals(listOf("photo"), item.images.map { it.fileId })
+    }
+
+    @Test
+    fun `metadata-light socket edit preserves an existing downloadable file`() {
+        val store = FeedStore("Unsupported")
+        val document = MattermostFile("document", "notes.pdf", "application/pdf", 0, 0, false)
+        store.replace(
+            listOf(post("file", 1).copy(fileIds = listOf("document"), files = listOf(document))),
+            listOf(user),
+        )
+
+        store.merge(
+            listOf(
+                post("file", 1).copy(
+                    message = "edited",
+                    updateAt = 2,
+                    fileIds = listOf("document"),
+                ),
+            ),
+        )
+
+        assertEquals("notes.pdf", store.snapshot().single().files.single().name)
     }
 
     private fun post(

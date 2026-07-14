@@ -7,6 +7,7 @@ import android.view.View
 import android.view.ViewGroup
 import android.view.ViewStub
 import android.widget.TextView
+import android.widget.ImageView
 import android.util.TypedValue
 import android.util.LruCache
 import androidx.core.content.ContextCompat
@@ -14,6 +15,7 @@ import androidx.recyclerview.widget.RecyclerView
 import com.example.mattermostlite.R
 import com.example.mattermostlite.model.DeliveryState
 import com.example.mattermostlite.model.FeedImage
+import com.example.mattermostlite.model.FeedFile
 import com.example.mattermostlite.model.FeedItem
 import com.example.mattermostlite.network.MattermostImageLoader
 import java.time.Instant
@@ -24,6 +26,8 @@ import kotlin.math.roundToInt
 class FeedAdapter(
     private val onRetry: (String) -> Unit,
     private val onImageClick: (FeedImage) -> Unit,
+    private val onFileClick: (FeedFile) -> Unit,
+    private val onYouTubeClick: (YouTubeVideo) -> Unit,
     private val imageLoader: MattermostImageLoader,
 ) : RecyclerView.Adapter<FeedAdapter.MessageViewHolder>() {
     private val items = mutableListOf<FeedItem>()
@@ -34,6 +38,9 @@ class FeedAdapter(
     private val linkedMessages = object : LruCache<String, CharSequence>(LINK_CACHE_CHARACTERS) {
         override fun sizeOf(key: String, value: CharSequence): Int =
             (key.length + value.length).coerceAtLeast(1)
+    }
+    private val youtubeMessages = object : LruCache<String, CachedYouTube>(LINK_CACHE_CHARACTERS) {
+        override fun sizeOf(key: String, value: CachedYouTube): Int = key.length.coerceAtLeast(1)
     }
 
     init {
@@ -114,11 +121,17 @@ class FeedAdapter(
 
     inner class MessageViewHolder(view: View) : RecyclerView.ViewHolder(view) {
         private val header = view.findViewById<View>(R.id.messageHeader)
+        private val avatar = view.findViewById<ImageView>(R.id.messageAvatar)
         private val author = view.findViewById<TextView>(R.id.messageAuthor)
         private val time = view.findViewById<TextView>(R.id.messageTime)
         private val body = view.findViewById<TextView>(R.id.messageBody)
         private val imageStub = view.findViewById<ViewStub>(R.id.messageImagesStub)
         private var images: MessageImageGridView? = null
+        private val youtubeStub = view.findViewById<ViewStub>(R.id.messageYouTubeStub)
+        private var youtubePreview: View? = null
+        private var youtubeThumbnail: ImageView? = null
+        private val filesStub = view.findViewById<ViewStub>(R.id.messageFilesStub)
+        private var files: MessageFileListView? = null
         private val state = view.findViewById<TextView>(R.id.messageState)
         private val bodyPaintFlags = body.paintFlags
         private val horizontalPadding = view.paddingLeft
@@ -126,6 +139,10 @@ class FeedAdapter(
         private val groupedVerticalPadding = (2f * view.resources.displayMetrics.density).roundToInt()
         private val regularMinHeight = (56f * view.resources.displayMetrics.density).roundToInt()
         private var boundAsContinuation: Boolean? = null
+        private var avatarRequest: MattermostImageLoader.ImageRequest? = null
+        private var boundAvatarUserId: String? = null
+        private var youtubeRequest: MattermostImageLoader.ImageRequest? = null
+        private var boundYouTubeId: String? = null
 
         init {
             body.movementMethod = LinkMovementMethod.getInstance()
@@ -136,6 +153,7 @@ class FeedAdapter(
             if (boundAsContinuation != isContinuation) {
                 boundAsContinuation = isContinuation
                 header.visibility = if (isContinuation) View.GONE else View.VISIBLE
+                avatar.visibility = if (isContinuation) View.GONE else View.VISIBLE
                 val verticalPadding = if (isContinuation) groupedVerticalPadding else regularVerticalPadding
                 itemView.minimumHeight = if (isContinuation) 0 else regularMinHeight
                 itemView.setPadding(horizontalPadding, verticalPadding, horizontalPadding, verticalPadding)
@@ -146,9 +164,13 @@ class FeedAdapter(
                 time.text = timeLabels.get(minute) ?: timeFormatter
                     .format(Instant.ofEpochMilli(minute * MessageGrouping.MINUTE_MS))
                     .also { timeLabels.put(minute, it) }
+                bindAvatar(item.userId)
+            } else {
+                clearAvatar()
             }
             body.text = linkedMessage(item.message)
             body.visibility = if (item.message.isBlank()) View.GONE else View.VISIBLE
+            bindYouTube(youtubeVideo(item.message))
             if (item.images.isEmpty()) {
                 images?.apply {
                     visibility = View.GONE
@@ -161,6 +183,19 @@ class FeedAdapter(
                 }
                 imageView.visibility = View.VISIBLE
                 imageView.setImages(imageLoader, item.images)
+            }
+            if (item.files.isEmpty()) {
+                files?.apply {
+                    visibility = View.GONE
+                    clearFiles()
+                }
+            } else {
+                val fileView = files ?: (filesStub.inflate() as MessageFileListView).also {
+                    files = it
+                    it.onFileClick = onFileClick
+                }
+                fileView.visibility = View.VISIBLE
+                fileView.setFiles(item.files)
             }
             body.paintFlags = bodyPaintFlags
             state.visibility = View.GONE
@@ -190,8 +225,69 @@ class FeedAdapter(
         }
 
         fun recycle() {
+            clearAvatar()
+            clearYouTube()
             images?.clearImages()
+            files?.clearFiles()
         }
+
+        private fun bindAvatar(userId: String) {
+            if (boundAvatarUserId == userId) return
+            clearAvatar()
+            boundAvatarUserId = userId
+            avatar.setImageResource(R.drawable.ic_person)
+            avatarRequest = imageLoader.loadAvatar(userId) { bitmap ->
+                if (boundAvatarUserId == userId && bitmap != null) {
+                    avatar.setPadding(0, 0, 0, 0)
+                    avatar.setImageBitmap(bitmap)
+                }
+            }
+        }
+
+        private fun clearAvatar() {
+            avatarRequest?.cancel()
+            avatarRequest = null
+            boundAvatarUserId = null
+            avatar.setPadding(avatarPlaceholderPadding, avatarPlaceholderPadding, avatarPlaceholderPadding, avatarPlaceholderPadding)
+            avatar.setImageResource(R.drawable.ic_person)
+        }
+
+        private fun bindYouTube(video: YouTubeVideo?) {
+            if (video == null) {
+                clearYouTube()
+                return
+            }
+            val preview = youtubePreview ?: youtubeStub.inflate().also {
+                youtubePreview = it
+                youtubeThumbnail = it.findViewById(R.id.youtubeThumbnail)
+            }
+            preview.visibility = View.VISIBLE
+            preview.contentDescription = itemView.context.getString(R.string.youtube_video_preview)
+            preview.setOnClickListener { onYouTubeClick(video) }
+            if (boundYouTubeId == video.id) return
+            youtubeRequest?.cancel()
+            boundYouTubeId = video.id
+            youtubeThumbnail?.setImageDrawable(null)
+            youtubeRequest = imageLoader.loadYouTubeThumbnail(video.id) { bitmap ->
+                if (boundYouTubeId == video.id && bitmap != null) {
+                    youtubeThumbnail?.setImageBitmap(bitmap)
+                }
+            }
+        }
+
+        private fun clearYouTube() {
+            youtubeRequest?.cancel()
+            youtubeRequest = null
+            boundYouTubeId = null
+            youtubeThumbnail?.setImageDrawable(null)
+            youtubePreview?.apply {
+                visibility = View.GONE
+                setOnClickListener(null)
+            }
+        }
+
+        private val avatarPlaceholderPadding: Int
+            get() = (6f * itemView.resources.displayMetrics.density).roundToInt()
     }
 
     private companion object {
@@ -217,4 +313,13 @@ class FeedAdapter(
         }
         return parsed
     }
+
+    private fun youtubeVideo(message: String): YouTubeVideo? {
+        youtubeMessages.get(message)?.let { return it.video }
+        return YouTubeLinkParser.firstVideo(message).also {
+            youtubeMessages.put(message, CachedYouTube(it))
+        }
+    }
+
+    private data class CachedYouTube(val video: YouTubeVideo?)
 }

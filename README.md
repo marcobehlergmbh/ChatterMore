@@ -1,6 +1,6 @@
 # Mattermost Lite
 
-A deliberately small, foreground-only Android client for one Mattermost channel. It targets Android 8 (API 26) and prioritizes immediate text rendering over feature breadth.
+A deliberately small, foreground-only Android client for one Mattermost channel. It targets Android 10 (API 29) and prioritizes immediate text rendering over feature breadth.
 
 ## Features
 
@@ -12,11 +12,14 @@ A deliberately small, foreground-only Android client for one Mattermost channel.
 - Keeps optimistic messages visually normal for 500 ms, then underlines them until confirmed.
 - Retries failed sends without losing the message text.
 - Renders authenticated image attachments from bounded server-generated previews.
+- Renders cached user avatars and lightweight YouTube thumbnail previews.
+- Streams authenticated video attachments in a full-screen player.
+- Shows other attached filenames and downloads them through Android's download manager.
 - Makes web links clickable with a regex-free, cached message parser.
 - Refreshes the latest messages after a fling reaches the bottom or a 48dp bottom overscroll.
 - Keeps a bounded 2,000-row in-memory feed and fetches evicted history again when needed.
 
-Threads, reactions, non-image files, Markdown rendering, multiple channels, offline storage, background sockets, and push notifications are intentionally out of scope.
+Threads, reactions, Markdown rendering, multiple channels, offline storage, background sockets, and push notifications are intentionally out of scope.
 
 ## Build
 
@@ -55,7 +58,7 @@ REST and WebSocket races converge in `FeedStore` by server post ID and `pending_
 
 ## Performance Validation
 
-Run measurements on a physical low-end Android 8+ device using a release/R8 build. The implementation targets:
+Run measurements on a physical low-end Android 10+ device using a release/R8 build. The implementation targets:
 
 - Send tap to pending row: p95 at or below 50 ms.
 - WebSocket callback to visible row: p95 at or below 100 ms, excluding network transit.

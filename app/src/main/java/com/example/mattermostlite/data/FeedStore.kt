@@ -4,6 +4,7 @@ import com.example.mattermostlite.model.DeliveryState
 import com.example.mattermostlite.model.FeedItem
 import com.example.mattermostlite.model.FeedImage
 import com.example.mattermostlite.model.FeedMutation
+import com.example.mattermostlite.model.FeedFile
 import com.example.mattermostlite.model.MattermostPost
 import com.example.mattermostlite.model.MattermostUser
 
@@ -194,12 +195,11 @@ class FeedStore(
         post.id.isNotBlank() && post.rootId.isBlank() && post.deleteAt == 0L
 
     private fun toFeedItem(post: MattermostPost, previous: FeedItem? = null): FeedItem {
-        val images = if (post.files.isEmpty()) {
-            if (post.fileIds.isEmpty()) {
-                emptyList()
-            } else {
-                previous?.images?.filter { it.fileId in post.fileIds }.orEmpty()
-            }
+        val preserveExistingMetadata = post.files.isEmpty() && post.fileIds.isNotEmpty()
+        val images = if (preserveExistingMetadata) {
+            previous?.images?.filter { it.fileId in post.fileIds }.orEmpty()
+        } else if (post.files.isEmpty()) {
+            emptyList()
         } else {
             post.files.mapNotNull {
                 if (it.id.isBlank() || !it.mimeType.startsWith("image/", ignoreCase = true)) {
@@ -215,6 +215,23 @@ class FeedStore(
                 }
             }
         }
+        val files = if (preserveExistingMetadata) {
+            previous?.files?.filter { it.fileId in post.fileIds }.orEmpty()
+        } else if (post.files.isEmpty()) {
+            emptyList()
+        } else {
+            post.files.mapNotNull {
+                if (it.id.isBlank() || it.mimeType.startsWith("image/", ignoreCase = true)) {
+                    null
+                } else {
+                    FeedFile(
+                        fileId = it.id,
+                        name = it.name.ifBlank { it.id },
+                        mimeType = it.mimeType.ifBlank { "application/octet-stream" },
+                    )
+                }
+            }
+        }
         return FeedItem(
             key = previous?.key ?: post.pendingPostId.takeIf(String::isNotBlank)?.let(::pendingKey) ?: serverKey(post.id),
             serverId = post.id,
@@ -222,11 +239,14 @@ class FeedStore(
             channelId = post.channelId,
             userId = post.userId,
             author = users[post.userId]?.displayName ?: previous?.author ?: post.userId,
-            message = post.message.ifBlank { if (images.isEmpty()) unsupportedMessage else "" },
+            message = post.message.ifBlank {
+                if (images.isEmpty() && files.isEmpty()) unsupportedMessage else ""
+            },
             createAt = post.createAt,
             updateAt = post.updateAt,
             deliveryState = DeliveryState.SENT,
             images = images,
+            files = files,
         )
     }
 

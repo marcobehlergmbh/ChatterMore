@@ -5,6 +5,7 @@
     <color name="text_primary">#FFFFFF</color>
     <color name="text_secondary">#CCCCCC</color>
     <color name="divider">#2C2C2C</color>
+    <color name="attachment_surface">#171717</color>
     <color name="mattermost_blue">#75A7FF</color>
     <color name="success">#56D364</color>
     <color name="warning">#E3B341</color>

@@ -21,4 +21,16 @@
     <string name="image_attachment">Image attachment</string>
     <string name="close_fullscreen_image">Close full screen image</string>
     <string name="image_load_failed">Unable to load image</string>
+    <string name="user_avatar">User avatar</string>
+    <string name="youtube">YouTube</string>
+    <string name="youtube_video_preview">YouTube video preview</string>
+    <string name="play_video_file">Play video %1$s</string>
+    <string name="download_file">Download %1$s</string>
+    <string name="download_file_prompt">Download %1$s to the Downloads folder?</string>
+    <string name="download">Download</string>
+    <string name="download_started">Downloading %1$s</string>
+    <string name="download_failed">Unable to download %1$s</string>
+    <string name="video_load_failed">This video cannot be played on this device.</string>
+    <string name="close_video">Close video</string>
+    <string name="unable_to_open_link">No app is available to open this video.</string>
 </resources>

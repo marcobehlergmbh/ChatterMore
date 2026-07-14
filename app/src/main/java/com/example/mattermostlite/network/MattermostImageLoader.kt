@@ -3,6 +3,7 @@ package com.example.mattermostlite.network
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.net.Uri
 import android.os.Handler
 import android.os.Looper
 import android.util.LruCache
@@ -34,6 +35,7 @@ class MattermostImageLoader(
     private val targetHeight: Int
     private val fullscreenTargetWidth: Int
     private val fullscreenTargetHeight: Int
+    private val avatarTargetSize: Int
     private val memoryCache: LruCache<String, Bitmap>
     private val inFlight = mutableMapOf<String, PendingLoad>()
     private val imageClient = client.newBuilder()
@@ -55,6 +57,7 @@ class MattermostImageLoader(
         targetHeight = (MAX_IMAGE_HEIGHT_DP * metrics.density).roundToInt().coerceAtLeast(1)
         fullscreenTargetWidth = metrics.widthPixels.coerceAtLeast(1)
         fullscreenTargetHeight = metrics.heightPixels.coerceAtLeast(1)
+        avatarTargetSize = (AVATAR_SIZE_DP * metrics.density).roundToInt().coerceAtLeast(1)
         val cacheKilobytes = min(
             MAX_MEMORY_CACHE_KB,
             (Runtime.getRuntime().maxMemory() / 8L / 1_024L).toInt(),
@@ -93,6 +96,56 @@ class MattermostImageLoader(
         )
     }
 
+    fun loadAvatar(userId: String, result: (Bitmap?) -> Unit): ImageRequest {
+        val requestConfig = config ?: return emptyResult(result)
+        if (userId.isBlank()) return emptyResult(result)
+        val url = requestConfig.baseUrl.toHttpUrl().newBuilder()
+            .addPathSegments("api/v4/users")
+            .addPathSegment(userId)
+            .addPathSegment("image")
+            .build()
+        return loadUrl(
+            key = "${requestConfig.baseUrl}|avatar|$userId",
+            url = url,
+            authorization = "Bearer ${requestConfig.token}",
+            accept = "image/*",
+            decodeWidth = avatarTargetSize,
+            decodeHeight = avatarTargetSize,
+            result = result,
+        )
+    }
+
+    fun loadYouTubeThumbnail(videoId: String, result: (Bitmap?) -> Unit): ImageRequest {
+        if (videoId.isBlank()) return emptyResult(result)
+        val url = "https://i.ytimg.com".toHttpUrl().newBuilder()
+            .addPathSegment("vi")
+            .addPathSegment(videoId)
+            .addPathSegment("hqdefault.jpg")
+            .build()
+        return loadUrl(
+            key = "youtube|$videoId",
+            url = url,
+            authorization = null,
+            accept = "image/*",
+            decodeWidth = targetWidth,
+            decodeHeight = targetHeight,
+            result = result,
+        )
+    }
+
+    fun mediaSource(fileId: String): MattermostMediaSource? {
+        val requestConfig = config ?: return null
+        if (fileId.isBlank()) return null
+        val url = requestConfig.baseUrl.toHttpUrl().newBuilder()
+            .addPathSegments("api/v4/files")
+            .addPathSegment(fileId)
+            .build()
+        return MattermostMediaSource(
+            uri = Uri.parse(url.toString()),
+            headers = mapOf("Authorization" to "Bearer ${requestConfig.token}"),
+        )
+    }
+
     private fun load(
         image: FeedImage,
         endpoint: String?,
@@ -101,11 +154,33 @@ class MattermostImageLoader(
         decodeHeight: Int,
         result: (Bitmap?) -> Unit,
     ): ImageRequest {
-        val requestConfig = config ?: run {
-            result(null)
-            return EMPTY_REQUEST
-        }
+        val requestConfig = config ?: return emptyResult(result)
         val key = "${requestConfig.baseUrl}|$cacheVariant|${image.fileId}"
+        val url = requestConfig.baseUrl.toHttpUrl().newBuilder()
+            .addPathSegments("api/v4/files")
+            .addPathSegment(image.fileId)
+            .apply { endpoint?.let(::addPathSegment) }
+            .build()
+        return loadUrl(
+            key = key,
+            url = url,
+            authorization = "Bearer ${requestConfig.token}",
+            accept = "image/*",
+            decodeWidth = decodeWidth,
+            decodeHeight = decodeHeight,
+            result = result,
+        )
+    }
+
+    private fun loadUrl(
+        key: String,
+        url: okhttp3.HttpUrl,
+        authorization: String?,
+        accept: String,
+        decodeWidth: Int,
+        decodeHeight: Int,
+        result: (Bitmap?) -> Unit,
+    ): ImageRequest {
         synchronized(lock) {
             memoryCache.get(key)?.let {
                 result(it)
@@ -124,16 +199,11 @@ class MattermostImageLoader(
             if (pending != null) {
                 pending.subscriptions += subscription
             } else {
-                val url = requestConfig.baseUrl.toHttpUrl().newBuilder()
-                    .addPathSegments("api/v4/files")
-                    .addPathSegment(image.fileId)
-                    .apply { endpoint?.let(::addPathSegment) }
-                    .build()
                 val call = imageClient.newCall(
                     Request.Builder()
                         .url(url)
-                        .header("Authorization", "Bearer ${requestConfig.token}")
-                        .header("Accept", "image/*")
+                        .apply { authorization?.let { header("Authorization", it) } }
+                        .header("Accept", accept)
                         .build(),
                 )
                 inFlight[key] = PendingLoad(call, mutableSetOf(subscription))
@@ -142,6 +212,11 @@ class MattermostImageLoader(
         }
         callToStart?.enqueue(ImageCallback(key, decodeWidth, decodeHeight))
         return subscription
+    }
+
+    private fun emptyResult(result: (Bitmap?) -> Unit): ImageRequest {
+        result(null)
+        return EMPTY_REQUEST
     }
 
     private fun complete(key: String, bitmap: Bitmap?) {
@@ -208,6 +283,7 @@ class MattermostImageLoader(
         const val MAX_NETWORK_REQUESTS = 4
         const val MAX_IMAGE_WIDTH_DP = 400
         const val MAX_IMAGE_HEIGHT_DP = 300
+        const val AVATAR_SIZE_DP = 40
         const val MAX_MEMORY_CACHE_KB = 32 * 1_024
         const val MAX_ENCODED_BYTES = 24 * 1_024 * 1_024
         val EMPTY_REQUEST = ImageRequest {}
@@ -270,3 +346,8 @@ class MattermostImageLoader(
         }
     }
 }
+
+data class MattermostMediaSource(
+    val uri: Uri,
+    val headers: Map<String, String>,
+)

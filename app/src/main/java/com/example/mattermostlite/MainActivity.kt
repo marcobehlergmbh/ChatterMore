@@ -2,7 +2,13 @@ package com.example.mattermostlite
 
 import android.app.AlertDialog
 import android.app.Dialog
+import android.app.DownloadManager
+import android.content.ActivityNotFoundException
+import android.content.Context
+import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
+import android.os.Environment
 import android.os.SystemClock
 import android.view.MotionEvent
 import android.view.View
@@ -12,8 +18,11 @@ import android.widget.Button
 import android.widget.EditText
 import android.widget.ImageButton
 import android.widget.ImageView
+import android.widget.MediaController
 import android.widget.ProgressBar
 import android.widget.TextView
+import android.widget.Toast
+import android.widget.VideoView
 import androidx.activity.ComponentActivity
 import androidx.activity.viewModels
 import androidx.core.content.ContextCompat
@@ -30,10 +39,13 @@ import com.example.mattermostlite.model.ConnectionState
 import com.example.mattermostlite.model.DeliveryState
 import com.example.mattermostlite.model.FeedMutation
 import com.example.mattermostlite.model.FeedImage
+import com.example.mattermostlite.model.FeedFile
 import com.example.mattermostlite.model.ServerConfig
 import com.example.mattermostlite.network.MattermostImageLoader
 import com.example.mattermostlite.ui.FeedAdapter
 import com.example.mattermostlite.ui.HistoryPrefetchPolicy
+import com.example.mattermostlite.ui.DownloadFileName
+import com.example.mattermostlite.ui.YouTubeVideo
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
@@ -64,6 +76,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var layoutManager: LinearLayoutManager
     private lateinit var adapter: FeedAdapter
     private var fullscreenImageDialog: Dialog? = null
+    private var fullscreenVideoDialog: Dialog? = null
     private val imageLoader: MattermostImageLoader by lazy {
         (application as MattermostLiteApplication).container.imageLoader
     }
@@ -107,6 +120,8 @@ class MainActivity : ComponentActivity() {
     override fun onDestroy() {
         fullscreenImageDialog?.dismiss()
         fullscreenImageDialog = null
+        fullscreenVideoDialog?.dismiss()
+        fullscreenVideoDialog = null
         super.onDestroy()
     }
 
@@ -193,6 +208,8 @@ class MainActivity : ComponentActivity() {
         adapter = FeedAdapter(
             onRetry = viewModel::retry,
             onImageClick = ::showFullscreenImage,
+            onFileClick = ::handleFileClick,
+            onYouTubeClick = ::openYouTubeVideo,
             imageLoader = imageLoader,
         )
         messageList.layoutManager = layoutManager
@@ -412,6 +429,91 @@ class MainActivity : ComponentActivity() {
         dialog.setOnDismissListener {
             request.cancel()
             if (fullscreenImageDialog === dialog) fullscreenImageDialog = null
+        }
+    }
+
+    private fun openYouTubeVideo(video: YouTubeVideo) {
+        try {
+            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(video.url)))
+        } catch (_: ActivityNotFoundException) {
+            Toast.makeText(this, R.string.unable_to_open_link, Toast.LENGTH_LONG).show()
+        }
+    }
+
+    private fun handleFileClick(file: FeedFile) {
+        if (file.isVideo) {
+            showVideo(file)
+        } else {
+            AlertDialog.Builder(this)
+                .setTitle(file.name)
+                .setMessage(getString(R.string.download_file_prompt, file.name))
+                .setNegativeButton(android.R.string.cancel, null)
+                .setPositiveButton(R.string.download) { _, _ -> enqueueDownload(file) }
+                .show()
+        }
+    }
+
+    private fun showVideo(file: FeedFile) {
+        val source = imageLoader.mediaSource(file.fileId) ?: return
+        fullscreenVideoDialog?.dismiss()
+        val dialog = Dialog(this, R.style.Theme_MattermostLite_FullscreenImage).apply {
+            setContentView(R.layout.dialog_video)
+        }
+        val videoView = dialog.findViewById<VideoView>(R.id.fullscreenVideo)
+        val progress = dialog.findViewById<ProgressBar>(R.id.fullscreenVideoProgress)
+        val error = dialog.findViewById<TextView>(R.id.fullscreenVideoError)
+        dialog.findViewById<TextView>(R.id.fullscreenVideoTitle).text = file.name
+        dialog.findViewById<ImageButton>(R.id.closeFullscreenVideo).setOnClickListener {
+            dialog.dismiss()
+        }
+        val controller = MediaController(this).apply { setAnchorView(videoView) }
+        videoView.setMediaController(controller)
+        videoView.setOnPreparedListener {
+            progress.isVisible = false
+            videoView.start()
+        }
+        videoView.setOnErrorListener { _, _, _ ->
+            progress.isVisible = false
+            error.isVisible = true
+            true
+        }
+        dialog.show()
+        dialog.window?.setLayout(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.MATCH_PARENT,
+        )
+        fullscreenVideoDialog = dialog
+        dialog.setOnDismissListener {
+            videoView.stopPlayback()
+            if (fullscreenVideoDialog === dialog) fullscreenVideoDialog = null
+        }
+        videoView.setVideoURI(source.uri, source.headers)
+        videoView.requestFocus()
+    }
+
+    private fun enqueueDownload(file: FeedFile) {
+        val source = imageLoader.mediaSource(file.fileId) ?: return
+        val fileName = DownloadFileName.sanitize(file.name, file.fileId)
+        val request = DownloadManager.Request(source.uri)
+            .setTitle(file.name)
+            .setDescription(getString(R.string.download_started, file.name))
+            .setMimeType(file.mimeType)
+            .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
+            .setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, fileName)
+        source.headers.forEach(request::addRequestHeader)
+        try {
+            (getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager).enqueue(request)
+            Toast.makeText(
+                this,
+                getString(R.string.download_started, file.name),
+                Toast.LENGTH_SHORT,
+            ).show()
+        } catch (_: RuntimeException) {
+            Toast.makeText(
+                this,
+                getString(R.string.download_failed, file.name),
+                Toast.LENGTH_LONG,
+            ).show()
         }
     }
 

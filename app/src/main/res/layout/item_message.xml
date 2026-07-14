@@ -2,60 +2,101 @@
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
-    android:orientation="vertical"
+    android:orientation="horizontal"
     android:paddingHorizontal="16dp"
     android:paddingVertical="7dp">
 
+    <FrameLayout
+        android:layout_width="44dp"
+        android:layout_height="match_parent"
+        android:paddingEnd="8dp">
+
+        <ImageView
+            android:id="@+id/messageAvatar"
+            android:layout_width="36dp"
+            android:layout_height="36dp"
+            android:background="@drawable/avatar_background"
+            android:clipToOutline="true"
+            android:contentDescription="@string/user_avatar"
+            android:outlineProvider="background"
+            android:padding="6dp"
+            android:scaleType="centerCrop"
+            android:src="@drawable/ic_person" />
+    </FrameLayout>
+
     <LinearLayout
-        android:id="@+id/messageHeader"
-        android:layout_width="match_parent"
+        android:layout_width="0dp"
         android:layout_height="wrap_content"
-        android:gravity="center_vertical"
-        android:orientation="horizontal">
+        android:layout_weight="1"
+        android:orientation="vertical">
+
+        <LinearLayout
+            android:id="@+id/messageHeader"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+
+            <TextView
+                android:id="@+id/messageAuthor"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:maxLines="1"
+                android:textColor="@color/text_primary"
+                android:textSize="14sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/messageTime"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="8dp"
+                android:textColor="@color/text_secondary"
+                android:textSize="12sp" />
+        </LinearLayout>
 
         <TextView
-            android:id="@+id/messageAuthor"
-            android:layout_width="0dp"
+            android:id="@+id/messageBody"
+            android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:maxLines="1"
+            android:layout_marginTop="2dp"
             android:textColor="@color/text_primary"
-            android:textSize="14sp"
-            android:textStyle="bold" />
+            android:textColorLink="@color/mattermost_blue"
+            android:textIsSelectable="true"
+            android:textSize="16sp" />
+
+        <ViewStub
+            android:id="@+id/messageYouTubeStub"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:inflatedId="@+id/messageYouTubePreview"
+            android:layout="@layout/message_youtube_preview" />
+
+        <ViewStub
+            android:id="@+id/messageImagesStub"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:inflatedId="@+id/messageImages"
+            android:layout="@layout/message_image_grid" />
+
+        <ViewStub
+            android:id="@+id/messageFilesStub"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:inflatedId="@+id/messageFiles"
+            android:layout="@layout/message_file_list" />
 
         <TextView
-            android:id="@+id/messageTime"
-            android:layout_width="wrap_content"
+            android:id="@+id/messageState"
+            android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginStart="8dp"
+            android:layout_marginTop="2dp"
             android:textColor="@color/text_secondary"
-            android:textSize="12sp" />
+            android:textSize="12sp"
+            android:visibility="gone" />
     </LinearLayout>
-
-    <TextView
-        android:id="@+id/messageBody"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="2dp"
-        android:textColor="@color/text_primary"
-        android:textColorLink="@color/mattermost_blue"
-        android:textIsSelectable="true"
-        android:textSize="16sp" />
-
-    <ViewStub
-        android:id="@+id/messageImagesStub"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="6dp"
-        android:inflatedId="@+id/messageImages"
-        android:layout="@layout/message_image_grid" />
-
-    <TextView
-        android:id="@+id/messageState"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="2dp"
-        android:textColor="@color/text_secondary"
-        android:textSize="12sp"
-        android:visibility="gone" />
 </LinearLayout>

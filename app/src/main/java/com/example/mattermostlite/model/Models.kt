@@ -72,6 +72,22 @@ data class FeedImage(
     val hasPreviewImage: Boolean,
 )
 
+data class FeedFile(
+    val fileId: String,
+    val name: String,
+    val mimeType: String,
+) {
+    val isVideo: Boolean
+        get() = mimeType.startsWith("video/", ignoreCase = true) ||
+            name.substringAfterLast('.', "").lowercase() in VIDEO_EXTENSIONS
+
+    private companion object {
+        val VIDEO_EXTENSIONS = setOf(
+            "3gp", "avi", "m4v", "mkv", "mov", "mp4", "mpeg", "mpg", "ogv", "ts", "webm",
+        )
+    }
+}
+
 data class PostPage(
     val order: List<String>,
     val posts: Map<String, MattermostPost>,
@@ -99,6 +115,7 @@ data class FeedItem(
     val updateAt: Long,
     val deliveryState: DeliveryState,
     val images: List<FeedImage> = emptyList(),
+    val files: List<FeedFile> = emptyList(),
 )
 
 enum class ConnectionState {
