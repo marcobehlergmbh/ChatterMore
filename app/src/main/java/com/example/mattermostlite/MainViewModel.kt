@@ -12,6 +12,7 @@ import com.example.mattermostlite.model.FeedMutation
 import com.example.mattermostlite.model.MattermostException
 import com.example.mattermostlite.model.ServerConfig
 import com.example.mattermostlite.model.TeamNotFoundException
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -142,7 +143,7 @@ class MainViewModel(
 
     fun send(message: String): Boolean {
         if (message.isBlank() || screen.value !is ScreenState.Channel) return false
-        viewModelScope.launch { repository.send(message) }
+        viewModelScope.launch(start = CoroutineStart.UNDISPATCHED) { repository.send(message) }
         return true
     }
 

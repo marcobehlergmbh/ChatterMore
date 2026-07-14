@@ -55,7 +55,8 @@ data class PostPage(
 
 enum class DeliveryState {
     SENT,
-    SENDING,
+    OPTIMISTIC,
+    UNCONFIRMED,
     FAILED,
 }
 

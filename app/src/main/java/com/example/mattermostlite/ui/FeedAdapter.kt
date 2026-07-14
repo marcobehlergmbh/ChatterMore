@@ -1,5 +1,6 @@
 package com.example.mattermostlite.ui
 
+import android.graphics.Paint
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
@@ -94,6 +95,7 @@ class FeedAdapter(
         private val time = view.findViewById<TextView>(R.id.messageTime)
         private val body = view.findViewById<TextView>(R.id.messageBody)
         private val state = view.findViewById<TextView>(R.id.messageState)
+        private val bodyPaintFlags = body.paintFlags
 
         fun bind(item: FeedItem) {
             author.text = item.author
@@ -101,19 +103,16 @@ class FeedAdapter(
                 .format(Instant.ofEpochMilli(item.createAt))
                 .also { timeLabels.put(item.createAt, it) }
             body.text = item.message
+            body.paintFlags = bodyPaintFlags
+            state.visibility = View.GONE
+            itemView.isClickable = false
+            itemView.background = null
+            itemView.setOnClickListener(null)
             when (item.deliveryState) {
-                DeliveryState.SENT -> {
-                    state.visibility = View.GONE
-                    itemView.isClickable = false
-                    itemView.background = null
-                }
-                DeliveryState.SENDING -> {
-                    state.visibility = View.VISIBLE
-                    state.setText(R.string.sending)
-                    state.setTextColor(ContextCompat.getColor(itemView.context, R.color.text_secondary))
-                    itemView.isClickable = false
-                    itemView.background = null
-                }
+                DeliveryState.SENT,
+                DeliveryState.OPTIMISTIC -> Unit
+                DeliveryState.UNCONFIRMED ->
+                    body.paintFlags = bodyPaintFlags or Paint.UNDERLINE_TEXT_FLAG
                 DeliveryState.FAILED -> {
                     state.visibility = View.VISIBLE
                     state.setText(R.string.send_failed)

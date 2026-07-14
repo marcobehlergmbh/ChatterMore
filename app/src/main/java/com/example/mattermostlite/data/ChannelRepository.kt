@@ -159,15 +159,18 @@ class ChannelRepository(
             feed.addPending(pendingId, channel.id, currentUser, message, System.currentTimeMillis())
         }
         _mutations.emit(mutation)
+        scheduleUnconfirmed(pendingId)
         return submitPending(pendingId, message)
     }
 
     suspend fun retry(pendingId: String) {
         val pending = feedMutex.withLock {
             val item = feed.pending(pendingId) ?: return
-            feed.setPendingState(pendingId, DeliveryState.SENDING) to item.message
+            val mutation = feed.setPendingState(pendingId, DeliveryState.OPTIMISTIC) ?: return
+            mutation to item.message
         }
-        pending.first?.let { _mutations.emit(it) }
+        _mutations.emit(pending.first)
+        scheduleUnconfirmed(pendingId)
         submitPending(pendingId, pending.second)
     }
 
@@ -183,6 +186,14 @@ class ChannelRepository(
         feedMutex.withLock { feed.setPendingState(pendingId, DeliveryState.FAILED) }
             ?.let { _mutations.emit(it) }
         false
+    }
+
+    private fun scheduleUnconfirmed(pendingId: String) {
+        scope.launch {
+            delay(UNCONFIRMED_GRACE_MS)
+            feedMutex.withLock { feed.markUnconfirmed(pendingId) }
+                ?.let { _mutations.emit(it) }
+        }
     }
 
     private fun startSocket() {
@@ -271,6 +282,7 @@ class ChannelRepository(
         const val PAGE_SIZE = 100
         const val MAX_REFRESH_PAGES = 50
         const val MAX_HISTORY_SCAN_PAGES = 50
+        const val UNCONFIRMED_GRACE_MS = 500L
         val POST_ORDER = compareBy<MattermostPost>({ it.createAt }, { it.id })
     }
 }

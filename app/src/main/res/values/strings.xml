@@ -14,7 +14,6 @@
     <string name="connecting">Connecting</string>
     <string name="connected">Connected</string>
     <string name="offline">Offline</string>
-    <string name="sending">Sending</string>
     <string name="send_failed">Failed. Tap to retry.</string>
     <string name="unsupported_message">Unsupported message</string>
     <string name="new_messages">New messages</string>

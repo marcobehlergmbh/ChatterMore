@@ -30,7 +30,7 @@ class FeedStoreTest {
     fun `reconciles websocket or rest acknowledgement by pending id`() {
         val store = FeedStore("Unsupported")
         store.addPending("client-1", "channel", user, "hello", 100)
-        assertEquals(DeliveryState.SENDING, store.snapshot().single().deliveryState)
+        assertEquals(DeliveryState.OPTIMISTIC, store.snapshot().single().deliveryState)
 
         val mutations = store.merge(
             listOf(post("server-1", 100, pendingId = "client-1")),
@@ -67,6 +67,28 @@ class FeedStoreTest {
         assertEquals(DeliveryState.FAILED, store.pending("client-1")?.deliveryState)
         assertEquals("hello", store.pending("client-1")?.message)
         assertNull(store.pending("missing"))
+    }
+
+    @Test
+    fun `optimistic post becomes underlined state until acknowledged`() {
+        val store = FeedStore("Unsupported")
+        store.addPending("client-1", "channel", user, "hello", 100)
+
+        val mutation = store.markUnconfirmed("client-1")
+
+        assertTrue(mutation is FeedMutation.Update)
+        assertEquals(DeliveryState.UNCONFIRMED, store.pending("client-1")?.deliveryState)
+    }
+
+    @Test
+    fun `late timer and failure cannot overwrite confirmed post`() {
+        val store = FeedStore("Unsupported")
+        store.addPending("client-1", "channel", user, "hello", 100)
+        store.merge(listOf(post("server-1", 100, pendingId = "client-1")), listOf(user))
+
+        assertNull(store.markUnconfirmed("client-1"))
+        assertNull(store.setPendingState("client-1", DeliveryState.FAILED))
+        assertEquals(DeliveryState.SENT, store.snapshot().single().deliveryState)
     }
 
     @Test

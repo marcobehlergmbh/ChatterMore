@@ -122,7 +122,7 @@ class FeedStore(
             message = message,
             createAt = createAt,
             updateAt = createAt,
-            deliveryState = DeliveryState.SENDING,
+            deliveryState = DeliveryState.OPTIMISTIC,
         )
         val index = items.binarySearch(item, FEED_ORDER).let { if (it >= 0) it else -it - 1 }
         items.add(index, item)
@@ -137,9 +137,16 @@ class FeedStore(
         val index = items.indexOfFirst { it.pendingId == pendingId }
         if (index < 0) return null
         val previous = items[index]
+        if (previous.serverId != null || previous.deliveryState == state) return null
         val updated = previous.copy(deliveryState = state)
         items[index] = updated
         return FeedMutation.Update(previous.key, updated)
+    }
+
+    fun markUnconfirmed(pendingId: String): FeedMutation.Update? {
+        val item = pending(pendingId) ?: return null
+        if (item.deliveryState != DeliveryState.OPTIMISTIC) return null
+        return setPendingState(pendingId, DeliveryState.UNCONFIRMED)
     }
 
     fun pending(pendingId: String): FeedItem? = items.firstOrNull { it.pendingId == pendingId }

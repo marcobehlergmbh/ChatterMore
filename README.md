@@ -9,6 +9,7 @@ A deliberately small, foreground-only Android client for one Mattermost channel.
 - Fetches missed/new messages with `after=<post_id>` and a defensive latest-page overlap.
 - Receives `posted`, `post_edited`, and `post_deleted` WebSocket events while foregrounded.
 - Inserts outgoing messages optimistically and reconciles REST/WebSocket acknowledgements with `pending_post_id`.
+- Keeps optimistic messages visually normal for 500 ms, then underlines them until confirmed.
 - Retries failed sends without losing the message text.
 - Refreshes the latest messages after a fling reaches the bottom or a 48dp bottom overscroll.
 - Keeps a bounded 2,000-row in-memory feed and fetches evicted history again when needed.

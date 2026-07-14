@@ -311,7 +311,7 @@ class MainActivity : ComponentActivity() {
 
         when (mutation) {
             is FeedMutation.Insert -> {
-                val ownPending = mutation.item.deliveryState == DeliveryState.SENDING
+                val ownPending = mutation.item.deliveryState == DeliveryState.OPTIMISTIC
                 if (wasNearBottom || ownPending) {
                     messageList.post { scrollToBottom(smooth = false) }
                 } else if (mutation.index <= firstPosition && firstPosition >= 0) {
@@ -330,7 +330,7 @@ class MainActivity : ComponentActivity() {
             }
             is FeedMutation.Replace -> {
                 val newNewest = mutation.items.lastOrNull()
-                val ownPending = newNewest?.deliveryState == DeliveryState.SENDING
+                val ownPending = newNewest?.deliveryState == DeliveryState.OPTIMISTIC
                 if (wasNearBottom || ownPending) {
                     messageList.post { scrollToBottom(false) }
                 } else if (firstKey != null) {
