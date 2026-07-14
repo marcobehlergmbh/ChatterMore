@@ -21,7 +21,6 @@ import com.example.mattermostlite.network.MattermostImageLoader
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
-import kotlin.math.roundToInt
 
 class FeedAdapter(
     private val onRetry: (String) -> Unit,
@@ -57,9 +56,12 @@ class FeedAdapter(
     }
 
     override fun onBindViewHolder(holder: MessageViewHolder, position: Int) {
+        val item = items[position]
+        val next = items.getOrNull(position + 1)
         holder.bind(
-            item = items[position],
-            isContinuation = MessageGrouping.isContinuation(items.getOrNull(position - 1), items[position]),
+            item = item,
+            isContinuation = MessageGrouping.isContinuation(items.getOrNull(position - 1), item),
+            isGroupEnd = next == null || !MessageGrouping.isContinuation(item, next),
         )
     }
 
@@ -90,6 +92,7 @@ class FeedAdapter(
         items.add(target, item)
         rebuildPositions(target)
         notifyItemInserted(target)
+        if (target > 0) notifyItemChanged(target - 1, PAYLOAD_GROUPING)
         if (target + 1 < items.size) notifyItemChanged(target + 1, PAYLOAD_GROUPING)
     }
 
@@ -98,7 +101,12 @@ class FeedAdapter(
         items[index] = item
         positions.remove(previousKey)
         positions[item.key] = index
-        notifyItemRangeChanged(index, minOf(2, items.size - index), PAYLOAD_CONTENT)
+        val changedStart = (index - 1).coerceAtLeast(0)
+        notifyItemRangeChanged(
+            changedStart,
+            minOf(3, items.size - changedStart),
+            PAYLOAD_CONTENT,
+        )
     }
 
     fun remove(key: String) {
@@ -107,6 +115,7 @@ class FeedAdapter(
         positions.remove(key)
         rebuildPositions(index)
         notifyItemRemoved(index)
+        if (index > 0) notifyItemChanged(index - 1, PAYLOAD_GROUPING)
         if (index < items.size) notifyItemChanged(index, PAYLOAD_GROUPING)
     }
 
@@ -135,10 +144,20 @@ class FeedAdapter(
         private val state = view.findViewById<TextView>(R.id.messageState)
         private val bodyPaintFlags = body.paintFlags
         private val horizontalPadding = view.paddingLeft
-        private val regularVerticalPadding = (7f * view.resources.displayMetrics.density).roundToInt()
-        private val groupedVerticalPadding = (2f * view.resources.displayMetrics.density).roundToInt()
-        private val regularMinHeight = (56f * view.resources.displayMetrics.density).roundToInt()
+        private val groupVerticalSpacing = view.resources.getDimensionPixelSize(
+            R.dimen.message_group_vertical_spacing,
+        )
+        private val innerVerticalSpacing = view.resources.getDimensionPixelSize(
+            R.dimen.message_inner_vertical_spacing,
+        )
+        private val groupMinHeight = view.resources.getDimensionPixelSize(
+            R.dimen.message_group_min_height,
+        )
+        private val avatarPlaceholderPadding = view.resources.getDimensionPixelSize(
+            R.dimen.message_avatar_placeholder_padding,
+        )
         private var boundAsContinuation: Boolean? = null
+        private var boundAsGroupEnd: Boolean? = null
         private var avatarRequest: MattermostImageLoader.ImageRequest? = null
         private var boundAvatarUserId: String? = null
         private var youtubeRequest: MattermostImageLoader.ImageRequest? = null
@@ -149,14 +168,16 @@ class FeedAdapter(
             body.linksClickable = true
         }
 
-        fun bind(item: FeedItem, isContinuation: Boolean) {
-            if (boundAsContinuation != isContinuation) {
+        fun bind(item: FeedItem, isContinuation: Boolean, isGroupEnd: Boolean) {
+            if (boundAsContinuation != isContinuation || boundAsGroupEnd != isGroupEnd) {
                 boundAsContinuation = isContinuation
+                boundAsGroupEnd = isGroupEnd
                 header.visibility = if (isContinuation) View.GONE else View.VISIBLE
                 avatar.visibility = if (isContinuation) View.GONE else View.VISIBLE
-                val verticalPadding = if (isContinuation) groupedVerticalPadding else regularVerticalPadding
-                itemView.minimumHeight = if (isContinuation) 0 else regularMinHeight
-                itemView.setPadding(horizontalPadding, verticalPadding, horizontalPadding, verticalPadding)
+                val topPadding = if (isContinuation) innerVerticalSpacing else groupVerticalSpacing
+                val bottomPadding = if (isGroupEnd) groupVerticalSpacing else innerVerticalSpacing
+                itemView.minimumHeight = if (isContinuation) 0 else groupMinHeight
+                itemView.setPadding(horizontalPadding, topPadding, horizontalPadding, bottomPadding)
             }
             if (!isContinuation) {
                 author.text = item.author
@@ -286,8 +307,6 @@ class FeedAdapter(
             }
         }
 
-        private val avatarPlaceholderPadding: Int
-            get() = (6f * itemView.resources.displayMetrics.density).roundToInt()
     }
 
     private companion object {

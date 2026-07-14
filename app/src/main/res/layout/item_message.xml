@@ -3,23 +3,23 @@
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
     android:orientation="horizontal"
-    android:paddingHorizontal="16dp"
-    android:paddingVertical="7dp">
+    android:paddingHorizontal="@dimen/message_horizontal_padding"
+    android:paddingVertical="@dimen/message_group_vertical_spacing">
 
     <FrameLayout
-        android:layout_width="44dp"
+        android:layout_width="52dp"
         android:layout_height="match_parent"
-        android:paddingEnd="8dp">
+        android:paddingEnd="12dp">
 
         <ImageView
             android:id="@+id/messageAvatar"
-            android:layout_width="36dp"
-            android:layout_height="36dp"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
             android:background="@drawable/avatar_background"
             android:clipToOutline="true"
             android:contentDescription="@string/user_avatar"
             android:outlineProvider="background"
-            android:padding="6dp"
+            android:padding="@dimen/message_avatar_placeholder_padding"
             android:scaleType="centerCrop"
             android:src="@drawable/ic_person" />
     </FrameLayout>
@@ -34,7 +34,9 @@
             android:id="@+id/messageHeader"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
+            android:baselineAligned="true"
             android:gravity="center_vertical"
+            android:minHeight="20dp"
             android:orientation="horizontal">
 
             <TextView
@@ -42,35 +44,33 @@
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
+                android:accessibilityHeading="true"
+                android:ellipsize="end"
                 android:maxLines="1"
-                android:textColor="@color/text_primary"
-                android:textSize="14sp"
-                android:textStyle="bold" />
+                style="@style/TextAppearance.MattermostLite.MessageAuthor" />
 
             <TextView
                 android:id="@+id/messageTime"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:layout_marginStart="8dp"
-                android:textColor="@color/text_secondary"
-                android:textSize="12sp" />
+                android:layout_marginStart="10dp"
+                style="@style/TextAppearance.MattermostLite.MessageMetadata" />
         </LinearLayout>
 
         <TextView
             android:id="@+id/messageBody"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="2dp"
-            android:textColor="@color/text_primary"
+            android:layout_marginTop="4dp"
             android:textColorLink="@color/mattermost_blue"
             android:textIsSelectable="true"
-            android:textSize="16sp" />
+            style="@style/TextAppearance.MattermostLite.MessageBody" />
 
         <ViewStub
             android:id="@+id/messageYouTubeStub"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="6dp"
+            android:layout_marginTop="8dp"
             android:inflatedId="@+id/messageYouTubePreview"
             android:layout="@layout/message_youtube_preview" />
 
@@ -78,7 +78,7 @@
             android:id="@+id/messageImagesStub"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="6dp"
+            android:layout_marginTop="8dp"
             android:inflatedId="@+id/messageImages"
             android:layout="@layout/message_image_grid" />
 
@@ -86,7 +86,7 @@
             android:id="@+id/messageFilesStub"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="6dp"
+            android:layout_marginTop="8dp"
             android:inflatedId="@+id/messageFiles"
             android:layout="@layout/message_file_list" />
 
@@ -94,9 +94,8 @@
             android:id="@+id/messageState"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="2dp"
-            android:textColor="@color/text_secondary"
-            android:textSize="12sp"
+            android:layout_marginTop="4dp"
+            style="@style/TextAppearance.MattermostLite.MessageMetadata"
             android:visibility="gone" />
     </LinearLayout>
 </LinearLayout>

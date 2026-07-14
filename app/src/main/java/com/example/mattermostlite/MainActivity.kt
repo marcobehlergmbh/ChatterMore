@@ -45,6 +45,7 @@ import com.example.mattermostlite.network.MattermostImageLoader
 import com.example.mattermostlite.ui.FeedAdapter
 import com.example.mattermostlite.ui.HistoryPrefetchPolicy
 import com.example.mattermostlite.ui.DownloadFileName
+import com.example.mattermostlite.ui.MessageScrollAnchor
 import com.example.mattermostlite.ui.YouTubeVideo
 import kotlinx.coroutines.launch
 
@@ -82,6 +83,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private var loadedChannel = false
+    private var pendingScrollAnchor: MessageScrollAnchor? = null
     private var lastBottomRefreshAt = 0L
     private var imeVisible = false
     private val refreshThreshold by lazy { 48f * resources.displayMetrics.density }
@@ -94,6 +96,7 @@ class MainActivity : ComponentActivity() {
         configureInsets()
         configureActions()
         configureFeed()
+        pendingScrollAnchor = savedInstanceState?.scrollAnchor()
         if (BuildConfig.BENCHMARK_FIXTURES) {
             viewModel.enableBenchmarkFixture(intent.getIntExtra(EXTRA_BENCHMARK_MESSAGE_COUNT, 2_000))
         }
@@ -104,17 +107,27 @@ class MainActivity : ComponentActivity() {
         super.onStart()
         viewModel.setForeground(true)
         if (loadedChannel && viewModel.screen.value is ScreenState.Channel) {
+            val anchor = pendingScrollAnchor ?: captureScrollAnchor()
             lifecycleScope.launch {
-                val keepBottom = isNearBottom()
                 adapter.replace(viewModel.snapshot())
-                if (keepBottom) messageList.post { scrollToBottom(smooth = false) }
+                messageList.post { restoreScrollAnchor(anchor) }
             }
         }
     }
 
     override fun onStop() {
+        pendingScrollAnchor = captureScrollAnchor() ?: pendingScrollAnchor
         viewModel.setForeground(false)
         super.onStop()
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        (captureScrollAnchor() ?: pendingScrollAnchor)?.let { anchor ->
+            outState.putString(STATE_SCROLL_ITEM_KEY, anchor.itemKey)
+            outState.putInt(STATE_SCROLL_POSITION, anchor.fallbackPosition)
+            outState.putInt(STATE_SCROLL_OFFSET, anchor.topOffset)
+        }
+        super.onSaveInstanceState(outState)
     }
 
     override fun onDestroy() {
@@ -314,9 +327,16 @@ class MainActivity : ComponentActivity() {
                 channelTitle.text = state.title
                 if (!loadedChannel) {
                     loadedChannel = true
+                    val anchor = pendingScrollAnchor
                     lifecycleScope.launch {
                         adapter.replace(viewModel.snapshot())
-                        messageList.post { scrollToBottom(smooth = false) }
+                        messageList.post {
+                            if (anchor == null) {
+                                scrollToBottom(smooth = false)
+                            } else {
+                                restoreScrollAnchor(anchor)
+                            }
+                        }
                     }
                 }
             }
@@ -522,6 +542,38 @@ class MainActivity : ComponentActivity() {
         return layoutManager.findLastVisibleItemPosition() >= adapter.itemCount - 3
     }
 
+    private fun captureScrollAnchor(): MessageScrollAnchor? {
+        if (!::adapter.isInitialized || adapter.itemCount == 0) return null
+        val position = layoutManager.findFirstVisibleItemPosition()
+        if (position == RecyclerView.NO_POSITION) return null
+        val item = adapter.itemAt(position) ?: return null
+        val topOffset = layoutManager.findViewByPosition(position)?.top ?: return null
+        return MessageScrollAnchor(
+            itemKey = item.key,
+            fallbackPosition = position,
+            topOffset = topOffset,
+        )
+    }
+
+    private fun restoreScrollAnchor(anchor: MessageScrollAnchor?) {
+        if (anchor == null) return
+        val keyedPosition = adapter.positionOf(anchor.itemKey)
+            .takeUnless { it == RecyclerView.NO_POSITION }
+        anchor.resolvePosition(adapter.itemCount, keyedPosition)?.let { position ->
+            layoutManager.scrollToPositionWithOffset(position, anchor.topOffset)
+        }
+        if (pendingScrollAnchor == anchor) pendingScrollAnchor = null
+    }
+
+    private fun Bundle.scrollAnchor(): MessageScrollAnchor? {
+        val itemKey = getString(STATE_SCROLL_ITEM_KEY) ?: return null
+        return MessageScrollAnchor(
+            itemKey = itemKey,
+            fallbackPosition = getInt(STATE_SCROLL_POSITION),
+            topOffset = getInt(STATE_SCROLL_OFFSET),
+        )
+    }
+
     private fun scrollToBottom(smooth: Boolean) {
         val last = adapter.itemCount - 1
         if (last < 0) return
@@ -552,5 +604,8 @@ class MainActivity : ComponentActivity() {
 
     private companion object {
         const val EXTRA_BENCHMARK_MESSAGE_COUNT = "benchmark_message_count"
+        const val STATE_SCROLL_ITEM_KEY = "scroll_item_key"
+        const val STATE_SCROLL_POSITION = "scroll_position"
+        const val STATE_SCROLL_OFFSET = "scroll_offset"
     }
 }
