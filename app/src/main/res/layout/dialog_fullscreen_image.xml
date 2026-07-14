@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="utf-8"?>
+<merge xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <ImageView
+        android:id="@+id/fullscreenImage"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:adjustViewBounds="true"
+        android:contentDescription="@string/image_attachment"
+        android:scaleType="fitCenter" />
+
+    <ProgressBar
+        android:id="@+id/fullscreenImageProgress"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="center" />
+
+    <TextView
+        android:id="@+id/fullscreenImageError"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="center"
+        android:text="@string/image_load_failed"
+        android:textColor="#FFFFFFFF"
+        android:textSize="16sp"
+        android:visibility="gone" />
+
+    <ImageButton
+        android:id="@+id/closeFullscreenImage"
+        android:layout_width="48dp"
+        android:layout_height="48dp"
+        android:layout_gravity="top|end"
+        android:layout_margin="16dp"
+        android:background="?android:attr/selectableItemBackgroundBorderless"
+        android:contentDescription="@string/close_fullscreen_image"
+        android:padding="12dp"
+        android:src="@android:drawable/ic_menu_close_clear_cancel"
+        android:tint="#FFFFFFFF" />
+</merge>
