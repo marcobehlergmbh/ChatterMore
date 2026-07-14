@@ -72,11 +72,11 @@ class MainViewModel(
         viewModelScope.launch {
             runCatching {
                 val normalized = container.api.normalizedConfig(config)
-                container.imageLoader.configure(normalized)
                 repository.initialize(normalized)
             }
-                .onSuccess { (channel, _) ->
+                .onSuccess { (channel, _, authenticatedConfig) ->
                     val normalized = container.api.normalizedConfig(config)
+                    container.imageLoader.configure(authenticatedConfig)
                     if (persist) container.configStore.save(normalized)
                     _screen.value = ScreenState.Channel(
                         title = channel.displayName.ifBlank { channel.name },
@@ -85,7 +85,7 @@ class MainViewModel(
                 .onFailure { error ->
                     if (!persist) container.configStore.clear()
                     _screen.value = ScreenState.Setup(
-                        config = config.copy(token = ""),
+                        config = config.copy(password = ""),
                         error = userMessage(error),
                     )
                 }
@@ -165,7 +165,7 @@ class MainViewModel(
         is TeamNotFoundException -> error.message ?: "The team could not be found."
         is ChannelNotFoundException -> error.message ?: "The channel could not be found."
         is MattermostException -> when (error.statusCode) {
-            401 -> "The personal access token is invalid or revoked."
+            401 -> "The username or password is incorrect."
             403 -> "This account cannot access or post to the channel."
             404 -> "The requested Mattermost resource could not be found."
             429 -> "The server rate limit was reached. Try again shortly."

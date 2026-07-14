@@ -50,7 +50,8 @@ class MainActivity : ComponentActivity() {
     private lateinit var serverUrl: EditText
     private lateinit var teamName: EditText
     private lateinit var channelName: EditText
-    private lateinit var accessToken: EditText
+    private lateinit var username: EditText
+    private lateinit var password: EditText
     private lateinit var connectButton: Button
     private lateinit var setupProgress: ProgressBar
     private lateinit var setupError: TextView
@@ -115,7 +116,8 @@ class MainActivity : ComponentActivity() {
         serverUrl = findViewById(R.id.serverUrl)
         teamName = findViewById(R.id.teamName)
         channelName = findViewById(R.id.channelName)
-        accessToken = findViewById(R.id.accessToken)
+        username = findViewById(R.id.username)
+        password = findViewById(R.id.password)
         connectButton = findViewById(R.id.connectButton)
         setupProgress = findViewById(R.id.setupProgress)
         setupError = findViewById(R.id.setupError)
@@ -159,7 +161,8 @@ class MainActivity : ComponentActivity() {
                     baseUrl = serverUrl.text.toString(),
                     teamName = teamName.text.toString(),
                     channelName = channelName.text.toString(),
-                    token = accessToken.text.toString(),
+                    username = username.text.toString(),
+                    password = password.text.toString(),
                 ),
             )
         }
@@ -427,14 +430,16 @@ class MainActivity : ComponentActivity() {
         if (serverUrl.text.isBlank()) serverUrl.setText(config.baseUrl)
         if (teamName.text.isBlank()) teamName.setText(config.teamName)
         if (channelName.text.isBlank()) channelName.setText(config.channelName)
-        if (accessToken.text.isBlank()) accessToken.setText(config.token)
+        if (username.text.isBlank()) username.setText(config.username)
+        if (password.text.isBlank()) password.setText(config.password)
     }
 
     private fun setSetupEnabled(enabled: Boolean) {
         serverUrl.isEnabled = enabled
         teamName.isEnabled = enabled
         channelName.isEnabled = enabled
-        accessToken.isEnabled = enabled
+        username.isEnabled = enabled
+        password.isEnabled = enabled
         connectButton.isEnabled = enabled
     }
 

@@ -16,12 +16,21 @@ class SecureConfigStore(context: Context) {
     private val preferences = context.getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE)
 
     fun load(): ServerConfig? {
+        if (preferences.contains(LEGACY_KEY_TOKEN) && !preferences.contains(KEY_PASSWORD)) {
+            clear()
+            runCatching {
+                KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
+                    .deleteEntry(LEGACY_KEY_ALIAS)
+            }
+            return null
+        }
         val baseUrl = preferences.getString(KEY_BASE_URL, null) ?: return null
         val team = preferences.getString(KEY_TEAM, null) ?: return null
         val channel = preferences.getString(KEY_CHANNEL, null) ?: return null
-        val encryptedToken = preferences.getString(KEY_TOKEN, null) ?: return null
+        val username = preferences.getString(KEY_USERNAME, null) ?: return null
+        val encryptedPassword = preferences.getString(KEY_PASSWORD, null) ?: return null
         return runCatching {
-            ServerConfig(baseUrl, team, channel, decrypt(encryptedToken))
+            ServerConfig(baseUrl, team, channel, username, decrypt(encryptedPassword))
         }.getOrElse {
             clear()
             null
@@ -30,10 +39,12 @@ class SecureConfigStore(context: Context) {
 
     fun save(config: ServerConfig) {
         preferences.edit {
+            clear()
             putString(KEY_BASE_URL, config.baseUrl)
             putString(KEY_TEAM, config.teamName)
             putString(KEY_CHANNEL, config.channelName)
-            putString(KEY_TOKEN, encrypt(config.token))
+            putString(KEY_USERNAME, config.username)
+            putString(KEY_PASSWORD, encrypt(config.password))
         }
     }
 
@@ -51,7 +62,7 @@ class SecureConfigStore(context: Context) {
 
     private fun decrypt(value: String): String {
         val parts = value.split(':', limit = 2)
-        require(parts.size == 2) { "Invalid encrypted token" }
+        require(parts.size == 2) { "Invalid encrypted password" }
         val iv = Base64.decode(parts[0], Base64.NO_WRAP)
         val ciphertext = Base64.decode(parts[1], Base64.NO_WRAP)
         val cipher = Cipher.getInstance(TRANSFORMATION)
@@ -82,8 +93,11 @@ class SecureConfigStore(context: Context) {
         const val KEY_BASE_URL = "base_url"
         const val KEY_TEAM = "team"
         const val KEY_CHANNEL = "channel"
-        const val KEY_TOKEN = "token"
-        const val KEY_ALIAS = "mattermost_lite_token"
+        const val KEY_USERNAME = "username"
+        const val KEY_PASSWORD = "password"
+        const val KEY_ALIAS = "mattermost_lite_credentials"
+        const val LEGACY_KEY_TOKEN = "token"
+        const val LEGACY_KEY_ALIAS = "mattermost_lite_token"
         const val ANDROID_KEYSTORE = "AndroidKeyStore"
         const val TRANSFORMATION = "AES/GCM/NoPadding"
     }

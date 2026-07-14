@@ -1,6 +1,7 @@
 package com.example.mattermostlite.data
 
 import com.example.mattermostlite.model.ConnectionState
+import com.example.mattermostlite.model.AuthenticatedServerConfig
 import com.example.mattermostlite.model.DeliveryState
 import com.example.mattermostlite.model.FeedItem
 import com.example.mattermostlite.model.FeedMutation
@@ -51,7 +52,7 @@ class ChannelRepository(
     val connectionState: StateFlow<ConnectionState> = _connectionState.asStateFlow()
     val refreshing: StateFlow<Boolean> = _refreshing.asStateFlow()
 
-    private lateinit var config: ServerConfig
+    private lateinit var config: AuthenticatedServerConfig
     private lateinit var channel: MattermostChannel
     private lateinit var currentUser: MattermostUser
     private var initialized = false
@@ -61,12 +62,16 @@ class ChannelRepository(
     private var socketCursor: SocketCursor? = null
     private var socketReady = CompletableDeferred<Unit>()
 
-    suspend fun initialize(rawConfig: ServerConfig): Pair<MattermostChannel, MattermostUser> {
+    suspend fun initialize(
+        rawConfig: ServerConfig,
+    ): Triple<MattermostChannel, MattermostUser, AuthenticatedServerConfig> {
         stopSocket()
+        initialized = false
         socketCursor = null
         olderExhausted = false
-        config = api.normalizedConfig(rawConfig)
-        currentUser = api.currentUser(config)
+        val (authenticatedConfig, authenticatedUser) = api.login(rawConfig)
+        config = authenticatedConfig
+        currentUser = authenticatedUser
         channel = api.resolveChannel(config)
         initialized = true
         if (foreground) startSocket()
@@ -77,7 +82,7 @@ class ChannelRepository(
         val profiles = fetchProfiles(posts)
         val mutation = feedMutex.withLock { feed.replace(posts, profiles + currentUser) }
         _mutations.emit(mutation)
-        return channel to currentUser
+        return Triple(channel, currentUser, config)
     }
 
     fun setForeground(value: Boolean) {

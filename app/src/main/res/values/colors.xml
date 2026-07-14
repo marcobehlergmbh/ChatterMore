@@ -1,13 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="background">#FAFBFC</color>
-    <color name="surface">#FFFFFF</color>
-    <color name="text_primary">#1F2328</color>
-    <color name="text_secondary">#59636E</color>
-    <color name="divider">#D8DEE4</color>
-    <color name="mattermost_blue">#1C58D9</color>
-    <color name="success">#18794E</color>
-    <color name="warning">#9A6700</color>
-    <color name="error">#CF222E</color>
+    <color name="background">#000000</color>
+    <color name="surface">#000000</color>
+    <color name="text_primary">#FFFFFF</color>
+    <color name="text_secondary">#CCCCCC</color>
+    <color name="divider">#2C2C2C</color>
+    <color name="mattermost_blue">#75A7FF</color>
+    <color name="success">#56D364</color>
+    <color name="warning">#E3B341</color>
+    <color name="error">#FF7B72</color>
 </resources>
-

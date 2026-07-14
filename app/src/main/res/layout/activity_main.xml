@@ -56,11 +56,20 @@
                 android:maxLines="1" />
 
             <EditText
-                android:id="@+id/accessToken"
+                android:id="@+id/username"
+                android:layout_width="match_parent"
+                android:layout_height="56dp"
+                android:autofillHints="username"
+                android:hint="@string/username"
+                android:inputType="text"
+                android:maxLines="1" />
+
+            <EditText
+                android:id="@+id/password"
                 android:layout_width="match_parent"
                 android:layout_height="56dp"
                 android:autofillHints="password"
-                android:hint="@string/personal_access_token"
+                android:hint="@string/password"
                 android:inputType="textPassword"
                 android:maxLines="1" />
 

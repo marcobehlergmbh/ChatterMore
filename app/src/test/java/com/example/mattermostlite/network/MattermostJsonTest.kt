@@ -102,4 +102,12 @@ class MattermostJsonTest {
         assertEquals("hello", json.string("message"))
         assertEquals("pending", json.string("pending_post_id"))
     }
+
+    @Test
+    fun `creates username password login body`() {
+        val json = mattermostJson.parseToJsonElement(loginBody("marco", "quote\"slash\\" )).jsonObject
+
+        assertEquals("marco", json.string("login_id"))
+        assertEquals("quote\"slash\\", json.string("password"))
+    }
 }

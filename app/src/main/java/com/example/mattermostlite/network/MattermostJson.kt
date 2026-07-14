@@ -122,6 +122,11 @@ internal fun createPostBody(
     put("pending_post_id", pendingPostId)
 }.toString()
 
+internal fun loginBody(username: String, password: String): String = buildJsonObject {
+    put("login_id", username)
+    put("password", password)
+}.toString()
+
 internal fun userIdsBody(ids: Collection<String>): String =
     JsonArray(ids.map(::JsonPrimitive)).toString()
 

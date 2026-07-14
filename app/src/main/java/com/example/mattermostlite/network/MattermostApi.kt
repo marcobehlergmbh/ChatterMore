@@ -1,6 +1,7 @@
 package com.example.mattermostlite.network
 
 import com.example.mattermostlite.model.ChannelNotFoundException
+import com.example.mattermostlite.model.AuthenticatedServerConfig
 import com.example.mattermostlite.model.MattermostChannel
 import com.example.mattermostlite.model.MattermostFile
 import com.example.mattermostlite.model.MattermostException
@@ -27,10 +28,27 @@ import kotlin.coroutines.resumeWithException
 class MattermostApi(
     private val client: OkHttpClient,
 ) {
-    suspend fun currentUser(config: ServerConfig): MattermostUser =
-        parseUser(execute(request(config, apiUrl(config, "users", "me"))))
+    suspend fun login(config: ServerConfig): Pair<AuthenticatedServerConfig, MattermostUser> {
+        val normalized = normalizedConfig(config)
+        val body = loginBody(normalized.username, normalized.password).toRequestBody(JSON_MEDIA_TYPE)
+        val response = executeResponse(
+            Request.Builder()
+                .url(apiUrl(normalized.baseUrl, "users", "login"))
+                .header("Accept", "application/json")
+                .post(body)
+                .build(),
+        )
+        val token = response.token
+            ?: throw MattermostException(500, "The server did not return a session token.")
+        return AuthenticatedServerConfig(
+            baseUrl = normalized.baseUrl,
+            teamName = normalized.teamName,
+            channelName = normalized.channelName,
+            token = token,
+        ) to parseUser(response.body)
+    }
 
-    suspend fun resolveChannel(config: ServerConfig): MattermostChannel {
+    suspend fun resolveChannel(config: AuthenticatedServerConfig): MattermostChannel {
         val team = resolveTeam(config)
         return try {
             parseChannel(
@@ -62,7 +80,7 @@ class MattermostApi(
         }
     }
 
-    private suspend fun resolveTeam(config: ServerConfig): MattermostTeam = try {
+    private suspend fun resolveTeam(config: AuthenticatedServerConfig): MattermostTeam = try {
         parseTeam(
             execute(
                 request(config, apiUrl(config, "teams", "name", config.teamName)),
@@ -89,7 +107,7 @@ class MattermostApi(
     }
 
     suspend fun posts(
-        config: ServerConfig,
+        config: AuthenticatedServerConfig,
         channelId: String,
         before: String? = null,
         after: String? = null,
@@ -106,7 +124,7 @@ class MattermostApi(
         return parsePostPage(execute(request(config, url)))
     }
 
-    suspend fun users(config: ServerConfig, ids: Collection<String>): List<MattermostUser> {
+    suspend fun users(config: AuthenticatedServerConfig, ids: Collection<String>): List<MattermostUser> {
         if (ids.isEmpty()) return emptyList()
         val body = userIdsBody(ids).toRequestBody(JSON_MEDIA_TYPE)
         return parseUsers(
@@ -118,13 +136,13 @@ class MattermostApi(
         )
     }
 
-    suspend fun filesForPost(config: ServerConfig, postId: String): List<MattermostFile> =
+    suspend fun filesForPost(config: AuthenticatedServerConfig, postId: String): List<MattermostFile> =
         parseFiles(
             execute(request(config, apiUrl(config, "posts", postId, "files", "info"))),
         )
 
     suspend fun createPost(
-        config: ServerConfig,
+        config: AuthenticatedServerConfig,
         channelId: String,
         message: String,
         pendingPostId: String,
@@ -146,17 +164,21 @@ class MattermostApi(
         require(url.query == null && url.fragment == null) { "The server URL cannot contain a query or fragment" }
         require(config.teamName.isNotBlank()) { "Enter a team name" }
         require(config.channelName.isNotBlank()) { "Enter a channel name" }
-        require(config.token.isNotBlank()) { "Enter a personal access token" }
+        require(config.username.isNotBlank()) { "Enter a username" }
+        require(config.password.isNotBlank()) { "Enter a password" }
         return config.copy(
             baseUrl = url.toString().trimEnd('/'),
             teamName = config.teamName.trim(),
             channelName = config.channelName.trim(),
-            token = config.token.trim(),
+            username = config.username.trim(),
         )
     }
 
-    internal fun apiUrl(config: ServerConfig, vararg path: String): HttpUrl {
-        val base = config.baseUrl.toHttpUrlOrNull()
+    internal fun apiUrl(config: AuthenticatedServerConfig, vararg path: String): HttpUrl =
+        apiUrl(config.baseUrl, *path)
+
+    private fun apiUrl(baseUrl: String, vararg path: String): HttpUrl {
+        val base = baseUrl.toHttpUrlOrNull()
             ?: throw IllegalArgumentException("Invalid server URL")
         return base.newBuilder()
             .addPathSegments("api/v4")
@@ -164,13 +186,15 @@ class MattermostApi(
             .build()
     }
 
-    private fun request(config: ServerConfig, url: HttpUrl): Request = Request.Builder()
+    private fun request(config: AuthenticatedServerConfig, url: HttpUrl): Request = Request.Builder()
         .url(url)
         .header("Authorization", "Bearer ${config.token}")
         .header("Accept", "application/json")
         .build()
 
-    private suspend fun execute(request: Request): String = suspendCancellableCoroutine { continuation ->
+    private suspend fun execute(request: Request): String = executeResponse(request).body
+
+    private suspend fun executeResponse(request: Request): ApiResponse = suspendCancellableCoroutine { continuation ->
         val call = client.newCall(request)
         continuation.invokeOnCancellation { call.cancel() }
         call.enqueue(object : Callback {
@@ -183,7 +207,7 @@ class MattermostApi(
                     val body = response.body.string()
                     if (!continuation.isActive) return
                     if (response.isSuccessful) {
-                        continuation.resume(body)
+                        continuation.resume(ApiResponse(body, response.header("Token")))
                     } else {
                         continuation.resumeWithException(
                             MattermostException(
@@ -206,4 +230,9 @@ class MattermostApi(
         fun MattermostChannel.matches(input: String): Boolean =
             name.equals(input, ignoreCase = true) || displayName.equals(input, ignoreCase = true)
     }
+
+    private data class ApiResponse(
+        val body: String,
+        val token: String?,
+    )
 }

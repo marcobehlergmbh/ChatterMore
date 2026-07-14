@@ -4,7 +4,7 @@ A deliberately small, foreground-only Android client for one Mattermost channel.
 
 ## Features
 
-- Connects to one configured team/channel using a personal access token.
+- Connects to one configured team/channel using a Mattermost username and password.
 - Loads recent history and pages backward with Mattermost's `before=<post_id>` cursor.
 - Fetches missed/new messages with `after=<post_id>` and a defensive latest-page overlap.
 - Receives `posted`, `post_edited`, and `post_deleted` WebSocket events while foregrounded.
@@ -12,6 +12,7 @@ A deliberately small, foreground-only Android client for one Mattermost channel.
 - Keeps optimistic messages visually normal for 500 ms, then underlines them until confirmed.
 - Retries failed sends without losing the message text.
 - Renders authenticated image attachments from bounded server-generated previews.
+- Makes web links clickable with a regex-free, cached message parser.
 - Refreshes the latest messages after a fling reaches the bottom or a 48dp bottom overscroll.
 - Keeps a bounded 2,000-row in-memory feed and fetches evicted history again when needed.
 
@@ -34,12 +35,12 @@ The debug APK is written to `app/build/outputs/apk/debug/app-debug.apk`.
 
 ## Connect
 
-1. Create a personal access token for a non-admin Mattermost account that belongs to the target channel.
+1. Use a non-admin Mattermost account that belongs to the target channel.
 2. Install and open the app.
-3. Enter the HTTPS server URL, team and channel URL or display names, and token.
+3. Enter the HTTPS server URL, team and channel URL or display names, username, and password.
 4. Tap **Connect**.
 
-The token is encrypted with an AES-GCM key held by Android Keystore. Android backup and cleartext network traffic are disabled. The server must present a certificate trusted by the Android system trust store.
+The password is encrypted with an AES-GCM key held by Android Keystore. It is exchanged for an in-memory Mattermost session token when the app connects. Android backup and cleartext network traffic are disabled. The server must present a certificate trusted by the Android system trust store.
 
 ## Architecture
 

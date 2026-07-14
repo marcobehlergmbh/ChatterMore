@@ -4,6 +4,14 @@ data class ServerConfig(
     val baseUrl: String,
     val teamName: String,
     val channelName: String,
+    val username: String,
+    val password: String,
+)
+
+data class AuthenticatedServerConfig(
+    val baseUrl: String,
+    val teamName: String,
+    val channelName: String,
     val token: String,
 )
 

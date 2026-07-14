@@ -1,6 +1,6 @@
 package com.example.mattermostlite.network
 
-import com.example.mattermostlite.model.ServerConfig
+import com.example.mattermostlite.model.AuthenticatedServerConfig
 import com.example.mattermostlite.model.SocketCursor
 import com.example.mattermostlite.model.SocketSignal
 import kotlinx.coroutines.channels.awaitClose
@@ -20,7 +20,7 @@ class MattermostSocket(
     private val client: OkHttpClient,
 ) {
     fun signals(
-        config: ServerConfig,
+        config: AuthenticatedServerConfig,
         cursor: SocketCursor?,
     ): Flow<SocketSignal> = callbackFlow {
         val closed = AtomicBoolean(false)

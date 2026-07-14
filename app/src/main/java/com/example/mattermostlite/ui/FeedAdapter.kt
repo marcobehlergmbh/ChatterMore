@@ -1,6 +1,7 @@
 package com.example.mattermostlite.ui
 
 import android.graphics.Paint
+import android.text.method.LinkMovementMethod
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
@@ -30,6 +31,10 @@ class FeedAdapter(
     private val timeFormatter = DateTimeFormatter.ofPattern("HH:mm")
         .withZone(ZoneId.systemDefault())
     private val timeLabels = LruCache<Long, String>(2_048)
+    private val linkedMessages = object : LruCache<String, CharSequence>(LINK_CACHE_CHARACTERS) {
+        override fun sizeOf(key: String, value: CharSequence): Int =
+            (key.length + value.length).coerceAtLeast(1)
+    }
 
     init {
         setHasStableIds(true)
@@ -122,6 +127,11 @@ class FeedAdapter(
         private val regularMinHeight = (56f * view.resources.displayMetrics.density).roundToInt()
         private var boundAsContinuation: Boolean? = null
 
+        init {
+            body.movementMethod = LinkMovementMethod.getInstance()
+            body.linksClickable = true
+        }
+
         fun bind(item: FeedItem, isContinuation: Boolean) {
             if (boundAsContinuation != isContinuation) {
                 boundAsContinuation = isContinuation
@@ -137,7 +147,7 @@ class FeedAdapter(
                     .format(Instant.ofEpochMilli(minute * MessageGrouping.MINUTE_MS))
                     .also { timeLabels.put(minute, it) }
             }
-            body.text = item.message
+            body.text = linkedMessage(item.message)
             body.visibility = if (item.message.isBlank()) View.GONE else View.VISIBLE
             if (item.images.isEmpty()) {
                 images?.apply {
@@ -185,6 +195,7 @@ class FeedAdapter(
     }
 
     private companion object {
+        const val LINK_CACHE_CHARACTERS = 256 * 1_024
         const val PAYLOAD_CONTENT = "content"
         const val PAYLOAD_GROUPING = "grouping"
 
@@ -196,5 +207,14 @@ class FeedAdapter(
             }
             return hash
         }
+    }
+
+    private fun linkedMessage(message: String): CharSequence {
+        linkedMessages.get(message)?.let { return it }
+        val parsed = MessageLinkParser.parse(message)
+        if (parsed !== message) {
+            linkedMessages.put(message, parsed)
+        }
+        return parsed
     }
 }
