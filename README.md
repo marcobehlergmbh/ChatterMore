@@ -1,0 +1,69 @@
+# Mattermost Lite
+
+A deliberately small, foreground-only Android client for one Mattermost channel. It targets Android 8 (API 26) and prioritizes immediate text rendering over feature breadth.
+
+## Features
+
+- Connects to one configured team/channel using a personal access token.
+- Loads recent history and pages backward with Mattermost's `before=<post_id>` cursor.
+- Fetches missed/new messages with `after=<post_id>` and a defensive latest-page overlap.
+- Receives `posted`, `post_edited`, and `post_deleted` WebSocket events while foregrounded.
+- Inserts outgoing messages optimistically and reconciles REST/WebSocket acknowledgements with `pending_post_id`.
+- Retries failed sends without losing the message text.
+- Refreshes the latest messages after a fling reaches the bottom or a 48dp bottom overscroll.
+- Keeps a bounded 2,000-row in-memory feed and fetches evicted history again when needed.
+
+Threads, reactions, files, Markdown rendering, multiple channels, offline storage, background sockets, and push notifications are intentionally out of scope.
+
+## Build
+
+Requirements:
+
+- JDK 17 or newer supported by Gradle 9.1
+- Android SDK Platform 36
+- Android SDK Build Tools 36.0.0
+
+```bash
+./gradlew testDebugUnitTest
+./gradlew assembleDebug
+```
+
+The debug APK is written to `app/build/outputs/apk/debug/app-debug.apk`.
+
+## Connect
+
+1. Create a personal access token for a non-admin Mattermost account that belongs to the target channel.
+2. Install and open the app.
+3. Enter the HTTPS server URL, team and channel URL or display names, and token.
+4. Tap **Connect**.
+
+The token is encrypted with an AES-GCM key held by Android Keystore. Android backup and cleartext network traffic are disabled. The server must present a certificate trusted by the Android system trust store.
+
+## Architecture
+
+- `MattermostApi`: the small REST surface for identity, channel resolution, authors, history, and sends.
+- `MattermostSocket`: foreground WebSocket event flow with connection/sequence tracking.
+- `ChannelRepository`: socket lifecycle, cursor requests, author loading, refreshes, and optimistic sends.
+- `FeedStore`: single canonical ordered feed, deduplication, pending reconciliation, and bounded memory.
+- `MainActivity` / `FeedAdapter`: XML Views and targeted RecyclerView mutations.
+
+REST and WebSocket races converge in `FeedStore` by server post ID and `pending_post_id`. Pending rows are never used as pagination cursors.
+
+## Performance Validation
+
+Run measurements on a physical low-end Android 8+ device using a release/R8 build. The implementation targets:
+
+- Send tap to pending row: p95 at or below 50 ms.
+- WebSocket callback to visible row: p95 at or below 100 ms, excluding network transit.
+- Fewer than 1% of frames over 16.7 ms while scrolling 1,000 mixed-length rows.
+- No loss or duplicates during a 20-post/second burst.
+
+Unit tests cover ordering, cursor selection, pending reconciliation, deletion, thread filtering, bounded memory, and protocol parsing. Physical-device frame, memory, CPU, and network measurements remain device/server-specific and cannot be established by JVM tests.
+
+The `benchmark` module supplies a deterministic 2,000-message benchmark build without credentials or network access. On a connected physical device, run:
+
+```bash
+./gradlew :benchmark:connectedBenchmarkAndroidTest
+```
+
+It measures cold startup plus repeated full-feed scrolling with startup, frame-timing, and last-sample memory metrics.

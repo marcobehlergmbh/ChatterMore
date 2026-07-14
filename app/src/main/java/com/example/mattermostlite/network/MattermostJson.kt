@@ -1,0 +1,117 @@
+package com.example.mattermostlite.network
+
+import com.example.mattermostlite.model.MattermostChannel
+import com.example.mattermostlite.model.MattermostPost
+import com.example.mattermostlite.model.MattermostTeam
+import com.example.mattermostlite.model.MattermostUser
+import com.example.mattermostlite.model.PostPage
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.longOrNull
+import kotlinx.serialization.json.put
+
+internal val mattermostJson = Json {
+    ignoreUnknownKeys = true
+    isLenient = false
+}
+
+internal fun parseUser(json: String): MattermostUser =
+    parseUser(mattermostJson.parseToJsonElement(json).jsonObject)
+
+internal fun parseUser(value: JsonObject): MattermostUser = MattermostUser(
+    id = value.string("id"),
+    username = value.string("username"),
+    firstName = value.string("first_name"),
+    lastName = value.string("last_name"),
+)
+
+internal fun parseUsers(json: String): List<MattermostUser> =
+    mattermostJson.parseToJsonElement(json).jsonArray.map { parseUser(it.jsonObject) }
+
+internal fun parseTeam(json: String): MattermostTeam {
+    val value = mattermostJson.parseToJsonElement(json).jsonObject
+    return parseTeam(value)
+}
+
+internal fun parseTeam(value: JsonObject): MattermostTeam = MattermostTeam(
+    id = value.string("id"),
+    name = value.string("name"),
+    displayName = value.string("display_name").ifBlank { value.string("name") },
+)
+
+internal fun parseTeams(json: String): List<MattermostTeam> =
+    mattermostJson.parseToJsonElement(json).jsonArray.map { parseTeam(it.jsonObject) }
+
+internal fun parseChannel(json: String): MattermostChannel {
+    val value = mattermostJson.parseToJsonElement(json).jsonObject
+    return parseChannel(value)
+}
+
+internal fun parseChannel(value: JsonObject): MattermostChannel = MattermostChannel(
+    id = value.string("id"),
+    name = value.string("name"),
+    displayName = value.string("display_name").ifBlank { value.string("name") },
+)
+
+internal fun parseChannels(json: String): List<MattermostChannel> =
+    mattermostJson.parseToJsonElement(json).jsonArray.map { parseChannel(it.jsonObject) }
+
+internal fun parsePost(json: String): MattermostPost =
+    parsePost(mattermostJson.parseToJsonElement(json).jsonObject)
+
+internal fun parsePost(value: JsonObject): MattermostPost = MattermostPost(
+    id = value.string("id"),
+    channelId = value.string("channel_id"),
+    userId = value.string("user_id"),
+    message = value.string("message"),
+    createAt = value.long("create_at"),
+    updateAt = value.long("update_at"),
+    deleteAt = value.long("delete_at"),
+    rootId = value.string("root_id"),
+    type = value.string("type"),
+    pendingPostId = value.string("pending_post_id"),
+)
+
+internal fun parsePostPage(json: String): PostPage {
+    val value = mattermostJson.parseToJsonElement(json).jsonObject
+    val order = value["order"]?.jsonArray
+        ?.mapNotNull { it.jsonPrimitive.contentOrNull }
+        .orEmpty()
+    val posts = value["posts"]?.jsonObject
+        ?.mapValues { (_, post) -> parsePost(post.jsonObject) }
+        .orEmpty()
+    return PostPage(order = order, posts = posts)
+}
+
+internal fun createPostBody(
+    channelId: String,
+    message: String,
+    pendingPostId: String,
+): String = buildJsonObject {
+    put("channel_id", channelId)
+    put("message", message)
+    put("pending_post_id", pendingPostId)
+}.toString()
+
+internal fun userIdsBody(ids: Collection<String>): String =
+    JsonArray(ids.map(::JsonPrimitive)).toString()
+
+internal fun errorMessage(json: String): String = runCatching {
+    mattermostJson.parseToJsonElement(json).jsonObject.string("message")
+}.getOrDefault("")
+
+internal fun JsonObject.string(name: String): String =
+    this[name]?.jsonPrimitive?.contentOrNull.orEmpty()
+
+internal fun JsonObject.long(name: String): Long =
+    this[name]?.jsonPrimitive?.longOrNull ?: 0L
+
+internal fun JsonElement.objectOrNull(): JsonObject? = this as? JsonObject

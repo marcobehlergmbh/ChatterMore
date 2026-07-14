@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Mattermost Lite</string>
+    <string name="setup_title">Mattermost Lite</string>
+    <string name="server_url_hint">https://mattermost.example.com</string>
+    <string name="team_name">Team URL or display name</string>
+    <string name="channel_name">Channel URL or display name</string>
+    <string name="personal_access_token">Personal access token</string>
+    <string name="connect">Connect</string>
+    <string name="send">Send</string>
+    <string name="change_connection">Change connection</string>
+    <string name="clear_connection_prompt">Clear the saved connection and return to setup?</string>
+    <string name="message_hint">Message</string>
+    <string name="connecting">Connecting</string>
+    <string name="connected">Connected</string>
+    <string name="offline">Offline</string>
+    <string name="sending">Sending</string>
+    <string name="send_failed">Failed. Tap to retry.</string>
+    <string name="unsupported_message">Unsupported message</string>
+    <string name="new_messages">New messages</string>
+</resources>
