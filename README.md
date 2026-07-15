@@ -17,11 +17,13 @@ A deliberately small, foreground-only Android client for one Mattermost channel.
 - Renders authenticated image attachments from bounded server-generated previews.
 - Renders cached user avatars with live Active, Away, or Offline presence badges.
 - Renders lightweight YouTube thumbnail previews.
+- Renders compact server-provided OpenGraph link previews without duplicating YouTube or Suno cards.
 - Persists downloaded image bytes in a bounded app-private cache across launches.
 - Adds inline play/stop controls for shared Suno song links.
 - Streams authenticated video attachments in a full-screen player.
 - Shows other attached filenames and downloads them through Android's download manager.
 - Makes web links clickable with a regex-free, cached message parser.
+- Renders Mattermost-style text smileys as Unicode emoji without changing stored messages.
 - Refreshes the latest messages after a fling reaches the bottom or a 48dp bottom overscroll.
 - Keeps a bounded 2,000-row in-memory feed and fetches evicted history again when needed.
 

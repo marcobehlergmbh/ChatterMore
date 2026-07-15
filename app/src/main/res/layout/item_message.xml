@@ -92,6 +92,14 @@
             android:layout="@layout/message_youtube_preview" />
 
         <ViewStub
+            android:id="@+id/messageLinkPreviewStub"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:inflatedId="@+id/messageLinkPreview"
+            android:layout="@layout/message_link_preview" />
+
+        <ViewStub
             android:id="@+id/messageImagesStub"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"

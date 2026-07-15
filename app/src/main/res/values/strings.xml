@@ -52,6 +52,7 @@
     <string name="presence_offline">Offline</string>
     <string name="youtube">YouTube</string>
     <string name="youtube_video_preview">YouTube video preview</string>
+    <string name="link_preview_description">Preview of %1$s from %2$s</string>
     <string name="play_video_file">Play video %1$s</string>
     <string name="download_file">Download %1$s</string>
     <string name="file_attachment_with_size">%1$s, %2$s</string>

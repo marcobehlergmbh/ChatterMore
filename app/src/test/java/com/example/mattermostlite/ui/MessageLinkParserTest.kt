@@ -1,7 +1,9 @@
 package com.example.mattermostlite.ui
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class MessageLinkParserTest {
@@ -38,5 +40,78 @@ class MessageLinkParserTest {
             "https://example.com/wiki/Foo_(bar)",
             links.single().target,
         )
+    }
+
+    @Test
+    fun `renders the Mattermost text smiley families as Unicode`() {
+        val examples = mapOf(
+            ":)" to "🙂",
+            ";-)" to "😉",
+            ":o" to "😮",
+            ":-O" to "😱",
+            ":]" to "😏",
+            ":D" to "😄",
+            "X-D" to "😝",
+            ":p" to "😛",
+            ":@" to "😡",
+            ":(" to "🙁",
+            ":'-(" to "😢",
+            ":/" to "😕",
+            ":S" to "😖",
+            ":|" to "😐",
+            ":\$" to "😳",
+            ":-x" to "😷",
+            "<3" to "❤️",
+            "</3" to "💔",
+        )
+
+        examples.forEach { (source, expected) ->
+            assertEquals(source, expected, MessageLinkParser.format(source)?.text)
+        }
+    }
+
+    @Test
+    fun `formats smileys and links in one scan while retaining shifted link ranges`() {
+        val formatted = MessageLinkParser.format(":-D https://example.com/:/ then :)")!!
+
+        assertEquals("😄 https://example.com/:/ then 🙂", formatted.text)
+        val link = formatted.links.single()
+        assertEquals("https://example.com/:/", formatted.text.substring(link.start, link.end))
+        assertEquals("https://example.com/:/", link.target)
+    }
+
+    @Test
+    fun `leaves smileys in URLs and backtick code unchanged`() {
+        val formatted = MessageLinkParser.format(
+            "https://example.com/:/ `:)` ```\n:(\n``` outside :D",
+        )!!
+
+        assertEquals(
+            "https://example.com/:/ `:)` ```\n:(\n``` outside 😄",
+            formatted.text,
+        )
+        assertEquals("https://example.com/:/", formatted.links.single().target)
+    }
+
+    @Test
+    fun `escaped smileys display literally without converting`() {
+        assertEquals(":) and \\:) and 🙂", MessageLinkParser.format("\\:) and \\\\:) and :)")?.text)
+    }
+
+    @Test
+    fun `requires token boundaries and leaves named aliases alone`() {
+        val text = "word:) 8:) :smile: already 🙂"
+
+        assertNull(MessageLinkParser.format(text))
+        assertSame(text, MessageLinkParser.parse(text))
+    }
+
+    @Test
+    fun `renders multiple smileys without creating link spans`() {
+        val formatted = MessageLinkParser.format("Hi :) welcome ;)")
+
+        assertTrue(formatted != null)
+        assertEquals("Hi 🙂 welcome 😉", formatted?.text)
+        assertTrue(formatted?.links?.isEmpty() == true)
     }
 }

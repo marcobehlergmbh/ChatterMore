@@ -12,6 +12,7 @@ import com.example.mattermostlite.model.ConnectionState
 import com.example.mattermostlite.model.ChannelNotFoundException
 import com.example.mattermostlite.model.DeliveryState
 import com.example.mattermostlite.model.FeedItem
+import com.example.mattermostlite.model.LinkPreview
 import com.example.mattermostlite.model.FeedMutation
 import com.example.mattermostlite.model.MattermostException
 import com.example.mattermostlite.model.MattermostFile
@@ -173,14 +174,30 @@ class MainViewModel(
                 channelId = "benchmark",
                 userId = "user-${index % 12}",
                 author = "User ${index % 12}",
-                message = if (index % 7 == 0) {
+                message = if (index % 11 == 0) {
+                    "A benchmark link preview at row $index https://example.com/releases/$index"
+                } else if (index % 7 == 0) {
                     "A longer benchmark message at row $index that wraps across multiple lines to exercise text layout without Markdown or attachments."
+                } else if (index % 13 == 0) {
+                    "A benchmark message with render-time smileys at row $index :) <3"
                 } else {
                     "Benchmark message $index"
                 },
                 createAt = 1_700_000_000_000L + index * 1_000L,
                 updateAt = 1_700_000_000_000L + index * 1_000L,
                 deliveryState = DeliveryState.SENT,
+                linkPreviews = if (index % 11 == 0) {
+                    listOf(
+                        LinkPreview(
+                            url = "https://example.com/releases/$index",
+                            title = "Release notes $index",
+                            description = "A compact benchmark preview without a network image.",
+                            siteName = "Example",
+                        ),
+                    )
+                } else {
+                    emptyList()
+                },
             )
         }
         _screen.value = ScreenState.Channel("Performance fixture")

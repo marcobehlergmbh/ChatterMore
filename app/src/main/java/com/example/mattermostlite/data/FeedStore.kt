@@ -215,6 +215,11 @@ class FeedStore(
         } else if (post.files.isEmpty()) {
             emptyList()
         } else filesFrom(post.files)
+        val linkPreviews = if (post.hasMetadata) {
+            post.linkPreviews
+        } else {
+            previous?.linkPreviews?.filter { post.message.contains(it.url) }.orEmpty()
+        }
         return FeedItem(
             key = previous?.key ?: post.pendingPostId.takeIf(String::isNotBlank)?.let(::pendingKey) ?: serverKey(post.id),
             serverId = post.id,
@@ -231,6 +236,7 @@ class FeedStore(
             fileIds = post.fileIds.ifEmpty { post.files.map(MattermostFile::id) },
             images = images,
             files = files,
+            linkPreviews = linkPreviews,
             editAt = post.editAt,
         )
     }

@@ -111,6 +111,53 @@ class MattermostJsonTest {
     }
 
     @Test
+    fun `parses useful OpenGraph embeds and ignores other embed types`() {
+        val post = parsePost(
+            """
+            {
+              "id":"post","channel_id":"c","user_id":"u","message":"https://example.com/story","create_at":1,
+              "metadata":{"embeds":[
+                {"type":"image","url":"https://example.com/photo.jpg"},
+                {"type":"opengraph","url":"https://example.com/story","data":{
+                  "title":"A useful story",
+                  "description":"The concise summary.",
+                  "site_name":"Example News",
+                  "images":[{"url":"https://cdn.example.com/fallback.jpg","secure_url":"https://cdn.example.com/story.jpg"}]
+                }}
+              ]}
+            }
+            """.trimIndent(),
+        )
+
+        assertTrue(post.hasMetadata)
+        val preview = post.linkPreviews.single()
+        assertEquals("https://example.com/story", preview.url)
+        assertEquals("A useful story", preview.title)
+        assertEquals("The concise summary.", preview.description)
+        assertEquals("Example News", preview.siteName)
+        assertEquals("https://cdn.example.com/story.jpg", preview.imageUrl)
+    }
+
+    @Test
+    fun `drops malformed or content-free OpenGraph embeds`() {
+        val post = parsePost(
+            """
+            {
+              "id":"post","channel_id":"c","user_id":"u","message":"links","create_at":1,
+              "metadata":{"embeds":[
+                {"type":"opengraph","url":"","data":{"title":"Missing URL"}},
+                {"type":"opengraph","url":"https://empty.example","data":{"images":[{"url":"https://empty.example/image.jpg"}]}},
+                {"type":"future","url":"https://future.example","data":{"title":"Future"}}
+              ]}
+            }
+            """.trimIndent(),
+        )
+
+        assertTrue(post.hasMetadata)
+        assertTrue(post.linkPreviews.isEmpty())
+    }
+
+    @Test
     fun `parses posted websocket envelope`() {
         val socket = MattermostSocket(OkHttpClient())
         val signal = socket.parseSignal(

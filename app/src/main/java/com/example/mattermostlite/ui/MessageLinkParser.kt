@@ -4,13 +4,13 @@ import android.text.Spannable
 import android.text.SpannableString
 import android.text.style.URLSpan
 
-/** Regex-free, single-pass web-link parser for the message-list hot path. */
+/** Regex-free, single-pass link and emoticon formatter for the message-list hot path. */
 internal object MessageLinkParser {
     fun parse(text: String): CharSequence {
-        val links = findLinks(text)
-        if (links.isEmpty()) return text
-        return SpannableString(text).apply {
-            links.forEach { link ->
+        val formatted = format(text) ?: return text
+        if (formatted.links.isEmpty()) return formatted.text
+        return SpannableString(formatted.text).apply {
+            formatted.links.forEach { link ->
                 setSpan(
                     URLSpan(link.target),
                     link.start,
@@ -21,33 +21,138 @@ internal object MessageLinkParser {
         }
     }
 
+    internal fun format(text: String): FormattedMessage? {
+        var cursor = 0
+        var sourceStart = 0
+        var codeDelimiterLength = 0
+        var output: StringBuilder? = null
+        var links: MutableList<MessageLink>? = null
+
+        while (cursor < text.length) {
+            val link = linkAt(text, cursor)
+            if (link != null) {
+                val outputStart: Int
+                val outputEnd: Int
+                if (output == null) {
+                    outputStart = link.start
+                    outputEnd = link.end
+                } else {
+                    output.append(text, sourceStart, link.start)
+                    outputStart = output.length
+                    output.append(text, link.start, link.end)
+                    outputEnd = output.length
+                    sourceStart = link.end
+                }
+                if (links == null) links = ArrayList(1)
+                links.add(MessageLink(outputStart, outputEnd, link.target))
+                cursor = link.end
+                continue
+            }
+
+            if (text[cursor] == '`') {
+                val runLength = backtickRunLength(text, cursor)
+                codeDelimiterLength = when {
+                    codeDelimiterLength == 0 -> runLength
+                    runLength >= codeDelimiterLength -> 0
+                    else -> codeDelimiterLength
+                }
+                cursor += runLength
+                continue
+            }
+
+            if (codeDelimiterLength == 0) {
+                val escaped = text[cursor] == '\\' && cursor + 1 < text.length
+                val candidateIndex = if (escaped) cursor + 1 else cursor
+                val match = if (text[candidateIndex].isSmileyStart()) {
+                    smileyAt(text, candidateIndex)
+                } else {
+                    null
+                }
+                if (match != null) {
+                    val builder = output
+                    if (builder == null) {
+                        output = StringBuilder(text.length).apply { append(text, 0, cursor) }
+                    } else {
+                        builder.append(text, sourceStart, cursor)
+                    }
+                    val target = output!!
+                    if (escaped) {
+                        target.append(text, cursor + 1, match.end)
+                    } else {
+                        target.append(match.emoji)
+                    }
+                    cursor = match.end
+                    sourceStart = cursor
+                    continue
+                }
+            }
+            cursor++
+        }
+
+        if (output == null && links == null) return null
+        val displayText = output?.apply { append(text, sourceStart, text.length) }?.toString() ?: text
+        return FormattedMessage(displayText, links ?: emptyList())
+    }
+
     fun findLinks(text: String): List<MessageLink> {
         var cursor = 0
         var links: MutableList<MessageLink>? = null
         while (cursor < text.length) {
-            val prefix = prefixAt(text, cursor)
-            if (prefix == null || !hasBoundary(text, cursor)) {
+            val link = linkAt(text, cursor)
+            if (link == null) {
                 cursor++
-                continue
+            } else {
+                if (links == null) links = ArrayList(1)
+                links.add(link)
+                cursor = link.end
             }
-
-            var end = cursor + prefix.length
-            while (end < text.length && !text[end].isLinkTerminator()) end++
-            end = trimTrailingPunctuation(text, cursor, end)
-            val addressStart = cursor + prefix.length
-            if (end <= addressStart || !text[addressStart].isHostStart()) {
-                cursor += prefix.length
-                continue
-            }
-
-            val displayUrl = text.substring(cursor, end)
-            val targetUrl = if (prefix == WWW_PREFIX) "https://$displayUrl" else displayUrl
-            val match = MessageLink(cursor, end, targetUrl)
-            if (links == null) links = ArrayList(1)
-            links.add(match)
-            cursor = end
         }
         return links ?: emptyList()
+    }
+
+    private fun linkAt(text: String, index: Int): MessageLink? {
+        val prefix = prefixAt(text, index) ?: return null
+        if (!hasBoundaryBefore(text, index)) return null
+        var end = index + prefix.length
+        while (end < text.length && !text[end].isLinkTerminator()) end++
+        end = trimTrailingPunctuation(text, index, end)
+        val addressStart = index + prefix.length
+        if (end <= addressStart || !text[addressStart].isHostStart()) return null
+        val displayUrl = text.substring(index, end)
+        val targetUrl = if (prefix == WWW_PREFIX) "https://$displayUrl" else displayUrl
+        return MessageLink(index, end, targetUrl)
+    }
+
+    private fun smileyAt(text: String, index: Int): SmileyMatch? {
+        if (index !in text.indices || !hasBoundaryBefore(text, index)) return null
+        val patterns = when (text[index].lowercaseChar()) {
+            ':' -> COLON_SMILEYS
+            ';' -> WINK_SMILEYS
+            'x' -> X_SMILEYS
+            '<' -> HEART_SMILEYS
+            else -> return null
+        }
+        patterns.forEach { pattern ->
+            if (
+                text.regionMatches(
+                    thisOffset = index,
+                    other = pattern.text,
+                    otherOffset = 0,
+                    length = pattern.text.length,
+                    ignoreCase = pattern.ignoreCase,
+                )
+            ) {
+                val end = index + pattern.text.length
+                if (hasBoundaryAfter(text, end)) return SmileyMatch(end, pattern.emoji)
+            }
+        }
+        return null
+    }
+
+    private fun backtickRunLength(text: String, start: Int): Int {
+        var end = start + 1
+        while (end < text.length && text[end] == '`') end++
+        return end - start
     }
 
     private fun prefixAt(text: String, index: Int): String? = when (text[index]) {
@@ -62,8 +167,16 @@ internal object MessageLinkParser {
         else -> null
     }
 
-    private fun hasBoundary(text: String, index: Int): Boolean =
-        index == 0 || (!text[index - 1].isLetterOrDigit() && text[index - 1] != '_')
+    private fun hasBoundaryBefore(text: String, index: Int): Boolean =
+        index == 0 || !text[index - 1].isWordCharacter()
+
+    private fun hasBoundaryAfter(text: String, index: Int): Boolean =
+        index == text.length || !text[index].isWordCharacter()
+
+    private fun Char.isWordCharacter(): Boolean = isLetterOrDigit() || this == '_'
+
+    private fun Char.isSmileyStart(): Boolean =
+        this == ':' || this == ';' || this == 'x' || this == 'X' || this == '<'
 
     private fun Char.isLinkTerminator(): Boolean =
         isWhitespace() || isISOControl() || this == '<' || this == '>' || this == '"' || this == '\''
@@ -100,10 +213,71 @@ internal object MessageLinkParser {
         return end
     }
 
+    private data class SmileyPattern(
+        val text: String,
+        val emoji: String,
+        val ignoreCase: Boolean = false,
+    )
+
+    private data class SmileyMatch(
+        val end: Int,
+        val emoji: String,
+    )
+
+    internal data class FormattedMessage(
+        val text: String,
+        val links: List<MessageLink>,
+    )
+
     private const val HTTP_PREFIX = "http://"
     private const val HTTPS_PREFIX = "https://"
     private const val WWW_PREFIX = "www."
     private val TRAILING_PUNCTUATION = charArrayOf('.', ',', ';', ':', '!', '?')
+
+    private val COLON_SMILEYS = arrayOf(
+        SmileyPattern(":'-(", "😢"),
+        SmileyPattern(":`-(", "😢"),
+        SmileyPattern(":’-(", "😢"),
+        SmileyPattern(":-)", "🙂"),
+        SmileyPattern(":-]", "😏"),
+        SmileyPattern(":-d", "😄", ignoreCase = true),
+        SmileyPattern(":-p", "😛", ignoreCase = true),
+        SmileyPattern(":-@", "😡"),
+        SmileyPattern(":-[", "😡"),
+        SmileyPattern(":-(", "🙁"),
+        SmileyPattern(":-/", "😕"),
+        SmileyPattern(":-s", "😖", ignoreCase = true),
+        SmileyPattern(":-|", "😐"),
+        SmileyPattern(":-$", "😳"),
+        SmileyPattern(":-x", "😷", ignoreCase = true),
+        SmileyPattern(":-o", "😱", ignoreCase = true),
+        SmileyPattern(":'(", "😢"),
+        SmileyPattern(":`(", "😢"),
+        SmileyPattern(":’(", "😢"),
+        SmileyPattern(":)", "🙂"),
+        SmileyPattern(":]", "😏"),
+        SmileyPattern(":d", "😄", ignoreCase = true),
+        SmileyPattern(":p", "😛", ignoreCase = true),
+        SmileyPattern(":@", "😡"),
+        SmileyPattern(":[", "😡"),
+        SmileyPattern(":(", "🙁"),
+        SmileyPattern(":/", "😕"),
+        SmileyPattern(":s", "😖", ignoreCase = true),
+        SmileyPattern(":|", "😐"),
+        SmileyPattern(":$", "😳"),
+        SmileyPattern(":o", "😮", ignoreCase = true),
+    )
+    private val WINK_SMILEYS = arrayOf(
+        SmileyPattern(";-)", "😉"),
+        SmileyPattern(";)", "😉"),
+    )
+    private val X_SMILEYS = arrayOf(
+        SmileyPattern("x-d", "😝", ignoreCase = true),
+    )
+    private val HEART_SMILEYS = arrayOf(
+        SmileyPattern("</3", "💔"),
+        SmileyPattern("<3", "❤️"),
+    )
 }
 
 internal data class MessageLink(

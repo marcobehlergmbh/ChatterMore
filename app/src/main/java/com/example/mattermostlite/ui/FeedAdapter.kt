@@ -9,6 +9,7 @@ import android.graphics.Paint
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
+import android.net.Uri
 import android.text.Spannable
 import android.text.SpannableStringBuilder
 import android.text.method.LinkMovementMethod
@@ -31,6 +32,7 @@ import com.example.mattermostlite.model.DeliveryState
 import com.example.mattermostlite.model.FeedImage
 import com.example.mattermostlite.model.FeedFile
 import com.example.mattermostlite.model.FeedItem
+import com.example.mattermostlite.model.LinkPreview
 import com.example.mattermostlite.model.UserPresence
 import com.example.mattermostlite.network.MattermostImageLoader
 import java.time.Instant
@@ -42,6 +44,7 @@ class FeedAdapter(
     private val onImageClick: (FeedImage) -> Unit,
     private val onFileClick: (FeedFile) -> Unit,
     private val onYouTubeClick: (YouTubeVideo) -> Unit,
+    private val onLinkPreviewClick: (LinkPreview) -> Unit,
     private val onMessageLongPress: (FeedItem) -> Boolean,
     private val imageLoader: MattermostImageLoader,
     private val sunoController: SunoPlaybackController,
@@ -53,7 +56,7 @@ class FeedAdapter(
     private val timeFormatter = DateTimeFormatter.ofPattern("HH:mm")
         .withZone(ZoneId.systemDefault())
     private val timeLabels = LruCache<Long, String>(2_048)
-    private val linkedMessages = object : LruCache<String, CharSequence>(LINK_CACHE_CHARACTERS) {
+    private val formattedMessages = object : LruCache<String, CharSequence>(LINK_CACHE_CHARACTERS) {
         override fun sizeOf(key: String, value: CharSequence): Int =
             (key.length + value.length).coerceAtLeast(1)
     }
@@ -207,6 +210,12 @@ class FeedAdapter(
         private var youtubeThumbnail: ImageView? = null
         private val sunoStub = view.findViewById<ViewStub>(R.id.messageSunoStub)
         private var sunoPlayer: SunoPlayerView? = null
+        private val linkPreviewStub = view.findViewById<ViewStub>(R.id.messageLinkPreviewStub)
+        private var linkPreview: View? = null
+        private var linkPreviewSite: TextView? = null
+        private var linkPreviewTitle: TextView? = null
+        private var linkPreviewDescription: TextView? = null
+        private var linkPreviewImage: ImageView? = null
         private val filesStub = view.findViewById<ViewStub>(R.id.messageFilesStub)
         private var files: MessageFileListView? = null
         private val state = view.findViewById<TextView>(R.id.messageState)
@@ -230,6 +239,8 @@ class FeedAdapter(
         private var boundAvatarUserId: String? = null
         private var youtubeRequest: MattermostImageLoader.ImageRequest? = null
         private var boundYouTubeId: String? = null
+        private var linkPreviewRequest: MattermostImageLoader.ImageRequest? = null
+        private var boundLinkPreviewImageUrl: String? = null
         private var tapGlowAnimator: AnimatorSet? = null
         private var tapGlowDrawable: GradientDrawable? = null
 
@@ -267,6 +278,7 @@ class FeedAdapter(
             body.visibility = if (item.message.isBlank()) View.GONE else View.VISIBLE
             bindSuno(sunoSong(item.message))
             bindYouTube(youtubeVideo(item.message))
+            bindLinkPreview(LinkPreviewSelector.firstGeneric(item.linkPreviews))
             if (item.images.isEmpty()) {
                 images?.apply {
                     visibility = View.GONE
@@ -325,6 +337,7 @@ class FeedAdapter(
             clearAvatar()
             clearSuno()
             clearYouTube()
+            clearLinkPreview()
             images?.clearImages()
             files?.clearFiles()
             presenceBadge.visibility = View.GONE
@@ -408,6 +421,55 @@ class FeedAdapter(
             playerView.bind(sunoController, song)
         }
 
+        private fun bindLinkPreview(preview: LinkPreview?) {
+            if (preview == null) {
+                clearLinkPreview()
+                return
+            }
+            val previewView = linkPreview ?: linkPreviewStub.inflate().also {
+                linkPreview = it
+                linkPreviewSite = it.findViewById(R.id.linkPreviewSite)
+                linkPreviewTitle = it.findViewById(R.id.linkPreviewTitle)
+                linkPreviewDescription = it.findViewById(R.id.linkPreviewDescription)
+                linkPreviewImage = it.findViewById(R.id.linkPreviewImage)
+            }
+            val site = preview.siteName.ifBlank {
+                Uri.parse(preview.url).host?.removePrefix("www.").orEmpty()
+            }.ifBlank { preview.url }
+            val title = preview.title.ifBlank { site }
+            previewView.visibility = View.VISIBLE
+            previewView.contentDescription = itemView.context.getString(
+                R.string.link_preview_description,
+                title,
+                site,
+            )
+            previewView.setOnClickListener { onLinkPreviewClick(preview) }
+            previewView.setOnLongClickListener { handleLongPress() }
+            linkPreviewSite?.text = site
+            linkPreviewTitle?.text = title
+            linkPreviewDescription?.apply {
+                text = preview.description
+                visibility = if (preview.description.isBlank()) View.GONE else View.VISIBLE
+            }
+
+            val imageUrl = preview.imageUrl
+            if (imageUrl.isNullOrBlank()) {
+                clearLinkPreviewImage()
+                return
+            }
+            if (boundLinkPreviewImageUrl == imageUrl) return
+            clearLinkPreviewImage()
+            boundLinkPreviewImageUrl = imageUrl
+            linkPreviewRequest = imageLoader.loadLinkPreviewImage(imageUrl) { bitmap ->
+                if (boundLinkPreviewImageUrl == imageUrl && bitmap != null) {
+                    linkPreviewImage?.apply {
+                        setImageBitmap(bitmap)
+                        visibility = View.VISIBLE
+                    }
+                }
+            }
+        }
+
         private fun clearSuno() {
             sunoPlayer?.apply {
                 clear()
@@ -423,6 +485,25 @@ class FeedAdapter(
             youtubePreview?.apply {
                 visibility = View.GONE
                 setOnClickListener(null)
+            }
+        }
+
+        private fun clearLinkPreview() {
+            clearLinkPreviewImage()
+            linkPreview?.apply {
+                visibility = View.GONE
+                setOnClickListener(null)
+                setOnLongClickListener(null)
+            }
+        }
+
+        private fun clearLinkPreviewImage() {
+            linkPreviewRequest?.cancel()
+            linkPreviewRequest = null
+            boundLinkPreviewImageUrl = null
+            linkPreviewImage?.apply {
+                setImageDrawable(null)
+                visibility = View.GONE
             }
         }
 
@@ -504,17 +585,17 @@ class FeedAdapter(
         }
     }
 
-    private fun linkedMessage(message: String): CharSequence {
-        linkedMessages.get(message)?.let { return it }
+    private fun formattedMessage(message: String): CharSequence {
+        formattedMessages.get(message)?.let { return it }
         val parsed = MessageLinkParser.parse(message)
         if (parsed !== message) {
-            linkedMessages.put(message, parsed)
+            formattedMessages.put(message, parsed)
         }
         return parsed
     }
 
     private fun messageText(item: FeedItem, context: Context): CharSequence {
-        val message = linkedMessage(item.message)
+        val message = formattedMessage(item.message)
         if (item.editAt <= 0L || item.message.isBlank()) return message
         return SpannableStringBuilder(message).apply {
             append(' ')

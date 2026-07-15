@@ -72,7 +72,17 @@ data class MattermostPost(
     val pendingPostId: String,
     val fileIds: List<String> = emptyList(),
     val files: List<MattermostFile> = emptyList(),
+    val linkPreviews: List<LinkPreview> = emptyList(),
+    val hasMetadata: Boolean = false,
     val editAt: Long = 0,
+)
+
+data class LinkPreview(
+    val url: String,
+    val title: String = "",
+    val description: String = "",
+    val siteName: String = "",
+    val imageUrl: String? = null,
 )
 
 data class MattermostFile(
@@ -146,6 +156,7 @@ data class FeedItem(
     val fileIds: List<String> = emptyList(),
     val images: List<FeedImage> = emptyList(),
     val files: List<FeedFile> = emptyList(),
+    val linkPreviews: List<LinkPreview> = emptyList(),
     val editAt: Long = 0,
 )
 

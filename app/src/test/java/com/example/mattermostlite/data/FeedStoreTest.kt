@@ -5,6 +5,7 @@ import com.example.mattermostlite.model.FeedMutation
 import com.example.mattermostlite.model.MattermostPost
 import com.example.mattermostlite.model.MattermostFile
 import com.example.mattermostlite.model.MattermostUser
+import com.example.mattermostlite.model.LinkPreview
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -278,6 +279,62 @@ class FeedStoreTest {
         )
 
         assertEquals("notes.pdf", store.snapshot().single().files.single().name)
+    }
+
+    @Test
+    fun `metadata-light edit preserves a preview while its URL remains`() {
+        val store = FeedStore("Unsupported")
+        val url = "https://example.com/story"
+        val preview = LinkPreview(url = url, title = "Story")
+        store.replace(
+            listOf(
+                post("link", 1).copy(
+                    message = "Read $url",
+                    linkPreviews = listOf(preview),
+                    hasMetadata = true,
+                ),
+            ),
+            listOf(user),
+        )
+
+        store.merge(
+            listOf(
+                post("link", 1).copy(
+                    message = "Updated: $url",
+                    updateAt = 2,
+                ),
+            ),
+        )
+
+        assertEquals(preview, store.snapshot().single().linkPreviews.single())
+    }
+
+    @Test
+    fun `explicit metadata clears an obsolete preview`() {
+        val store = FeedStore("Unsupported")
+        val url = "https://example.com/story"
+        store.replace(
+            listOf(
+                post("link", 1).copy(
+                    message = url,
+                    linkPreviews = listOf(LinkPreview(url = url, title = "Story")),
+                    hasMetadata = true,
+                ),
+            ),
+            listOf(user),
+        )
+
+        store.merge(
+            listOf(
+                post("link", 1).copy(
+                    message = "The link is gone",
+                    updateAt = 2,
+                    hasMetadata = true,
+                ),
+            ),
+        )
+
+        assertTrue(store.snapshot().single().linkPreviews.isEmpty())
     }
 
     @Test

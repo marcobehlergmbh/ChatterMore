@@ -13,6 +13,7 @@ import okhttp3.Call
 import okhttp3.Callback
 import okhttp3.Dispatcher
 import okhttp3.HttpUrl.Companion.toHttpUrl
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
@@ -38,6 +39,7 @@ class MattermostImageLoader(
     private val fullscreenTargetWidth: Int
     private val fullscreenTargetHeight: Int
     private val avatarTargetSize: Int
+    private val linkPreviewTargetSize: Int
     private val memoryCache: LruCache<String, Bitmap>
     private val diskCache = ImageDiskCache(File(context.filesDir, "image_cache"), MAX_DISK_CACHE_BYTES)
     private val diskExecutor = Executors.newFixedThreadPool(DISK_CACHE_THREADS)
@@ -62,6 +64,7 @@ class MattermostImageLoader(
         fullscreenTargetWidth = metrics.widthPixels.coerceAtLeast(1)
         fullscreenTargetHeight = metrics.heightPixels.coerceAtLeast(1)
         avatarTargetSize = (AVATAR_SIZE_DP * metrics.density).roundToInt().coerceAtLeast(1)
+        linkPreviewTargetSize = (LINK_PREVIEW_SIZE_DP * metrics.density).roundToInt().coerceAtLeast(1)
         val cacheKilobytes = min(
             MAX_MEMORY_CACHE_KB,
             (Runtime.getRuntime().maxMemory() / 8L / 1_024L).toInt(),
@@ -139,6 +142,37 @@ class MattermostImageLoader(
         )
     }
 
+    fun loadLinkPreviewImage(imageUrl: String, result: (Bitmap?) -> Unit): ImageRequest {
+        val url = imageUrl.toHttpUrlOrNull()
+            ?.takeIf { it.scheme == "https" && it.username.isBlank() && it.password.isBlank() }
+            ?: return emptyResult(result)
+        val requestConfig = config
+        val serverUrl = requestConfig?.baseUrl?.toHttpUrlOrNull()
+        val authorization = if (
+            requestConfig != null &&
+            serverUrl != null &&
+            url.scheme == serverUrl.scheme &&
+            url.host == serverUrl.host &&
+            url.port == serverUrl.port
+        ) {
+            "Bearer ${requestConfig.token}"
+        } else {
+            null
+        }
+        return loadUrl(
+            key = "link-preview|$imageUrl",
+            diskKey = "link-preview|$imageUrl",
+            url = url,
+            authorization = authorization,
+            accept = "image/*",
+            decodeWidth = linkPreviewTargetSize,
+            decodeHeight = linkPreviewTargetSize,
+            maxEncodedBytes = MAX_LINK_PREVIEW_ENCODED_BYTES,
+            requireImageContentType = true,
+            result = result,
+        )
+    }
+
     fun mediaSource(fileId: String): MattermostMediaSource? {
         val requestConfig = config ?: return null
         if (fileId.isBlank()) return null
@@ -187,6 +221,8 @@ class MattermostImageLoader(
         accept: String,
         decodeWidth: Int,
         decodeHeight: Int,
+        maxEncodedBytes: Int = MAX_ENCODED_BYTES,
+        requireImageContentType: Boolean = false,
         result: (Bitmap?) -> Unit,
     ): ImageRequest {
         synchronized(lock) {
@@ -227,6 +263,8 @@ class MattermostImageLoader(
                         accept = accept,
                         decodeWidth = decodeWidth,
                         decodeHeight = decodeHeight,
+                        maxEncodedBytes = maxEncodedBytes,
+                        requireImageContentType = requireImageContentType,
                     )
                 }
             }
@@ -242,6 +280,8 @@ class MattermostImageLoader(
         accept: String,
         decodeWidth: Int,
         decodeHeight: Int,
+        maxEncodedBytes: Int,
+        requireImageContentType: Boolean,
     ) {
         val call = imageClient.newCall(
             Request.Builder()
@@ -254,7 +294,16 @@ class MattermostImageLoader(
             val pending = inFlight[key] ?: return
             pending.call = call
         }
-        call.enqueue(ImageCallback(key, diskKey, decodeWidth, decodeHeight))
+        call.enqueue(
+            ImageCallback(
+                key,
+                diskKey,
+                decodeWidth,
+                decodeHeight,
+                maxEncodedBytes,
+                requireImageContentType,
+            ),
+        )
     }
 
     private fun emptyResult(result: (Bitmap?) -> Unit): ImageRequest {
@@ -282,13 +331,18 @@ class MattermostImageLoader(
         private val diskKey: String,
         private val decodeWidth: Int,
         private val decodeHeight: Int,
+        private val maxEncodedBytes: Int,
+        private val requireImageContentType: Boolean,
     ) : Callback {
         override fun onFailure(call: Call, e: IOException) = complete(key, null)
 
         override fun onResponse(call: Call, response: Response) {
             val bytes = response.use {
-                if (!response.isSuccessful) return@use null
-                response.body.readBoundedBytes(MAX_ENCODED_BYTES)
+                if (!response.isSuccessful || response.request.url.scheme != "https") return@use null
+                if (requireImageContentType && response.body.contentType()?.type != "image") {
+                    return@use null
+                }
+                response.body.readBoundedBytes(maxEncodedBytes)
             }
             if (bytes == null) {
                 complete(key, null)
@@ -334,10 +388,12 @@ class MattermostImageLoader(
         const val MAX_IMAGE_WIDTH_DP = 400
         const val MAX_IMAGE_HEIGHT_DP = 300
         const val AVATAR_SIZE_DP = 40
+        const val LINK_PREVIEW_SIZE_DP = 96
         const val MAX_MEMORY_CACHE_KB = 32 * 1_024
         const val MAX_DISK_CACHE_BYTES = 128L * 1_024L * 1_024L
         const val DISK_CACHE_THREADS = 2
         const val MAX_ENCODED_BYTES = 24 * 1_024 * 1_024
+        const val MAX_LINK_PREVIEW_ENCODED_BYTES = 6 * 1_024 * 1_024
         val EMPTY_REQUEST = ImageRequest {}
 
         fun decodeSampled(bytes: ByteArray, targetWidth: Int, targetHeight: Int): Bitmap? {

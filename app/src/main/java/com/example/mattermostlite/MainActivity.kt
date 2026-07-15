@@ -54,6 +54,7 @@ import com.example.mattermostlite.model.FeedMutation
 import com.example.mattermostlite.model.FeedImage
 import com.example.mattermostlite.model.FeedFile
 import com.example.mattermostlite.model.FeedItem
+import com.example.mattermostlite.model.LinkPreview
 import com.example.mattermostlite.model.ServerConfig
 import com.example.mattermostlite.data.AttachmentSelection
 import com.example.mattermostlite.data.IncomingShare
@@ -442,6 +443,7 @@ class MainActivity : ComponentActivity() {
             onImageClick = ::showFullscreenImage,
             onFileClick = ::handleFileClick,
             onYouTubeClick = ::openYouTubeVideo,
+            onLinkPreviewClick = ::openLinkPreview,
             onMessageLongPress = ::beginMessageEdit,
             imageLoader = imageLoader,
             sunoController = sunoController,
@@ -871,8 +873,21 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun openYouTubeVideo(video: YouTubeVideo) {
+        openExternalUrl(video.url)
+    }
+
+    private fun openLinkPreview(preview: LinkPreview) {
+        openExternalUrl(preview.url)
+    }
+
+    private fun openExternalUrl(url: String) {
+        val uri = Uri.parse(url)
+        if (uri.scheme != "https" && uri.scheme != "http") {
+            Toast.makeText(this, R.string.unable_to_open_link, Toast.LENGTH_LONG).show()
+            return
+        }
         try {
-            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(video.url)))
+            startActivity(Intent(Intent.ACTION_VIEW, uri))
         } catch (_: ActivityNotFoundException) {
             Toast.makeText(this, R.string.unable_to_open_link, Toast.LENGTH_LONG).show()
         }

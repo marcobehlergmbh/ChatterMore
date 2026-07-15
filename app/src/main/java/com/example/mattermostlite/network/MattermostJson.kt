@@ -2,6 +2,7 @@ package com.example.mattermostlite.network
 
 import com.example.mattermostlite.model.MattermostChannel
 import com.example.mattermostlite.model.MattermostFile
+import com.example.mattermostlite.model.LinkPreview
 import com.example.mattermostlite.model.MattermostPost
 import com.example.mattermostlite.model.MattermostTeam
 import com.example.mattermostlite.model.MattermostUser
@@ -83,25 +84,60 @@ internal fun parseChannels(json: String): List<MattermostChannel> =
 internal fun parsePost(json: String): MattermostPost =
     parsePost(mattermostJson.parseToJsonElement(json).jsonObject)
 
-internal fun parsePost(value: JsonObject): MattermostPost = MattermostPost(
-    id = value.string("id"),
-    channelId = value.string("channel_id"),
-    userId = value.string("user_id"),
-    message = value.string("message"),
-    createAt = value.long("create_at"),
-    updateAt = value.long("update_at"),
-    deleteAt = value.long("delete_at"),
-    rootId = value.string("root_id"),
-    type = value.string("type"),
-    pendingPostId = value.string("pending_post_id"),
-    fileIds = value.stringList("file_ids"),
-    files = value["metadata"]?.objectOrNull()
-        ?.get("files")
+internal fun parsePost(value: JsonObject): MattermostPost {
+    val metadata = value["metadata"]?.objectOrNull()
+    return MattermostPost(
+        id = value.string("id"),
+        channelId = value.string("channel_id"),
+        userId = value.string("user_id"),
+        message = value.string("message"),
+        createAt = value.long("create_at"),
+        updateAt = value.long("update_at"),
+        deleteAt = value.long("delete_at"),
+        rootId = value.string("root_id"),
+        type = value.string("type"),
+        pendingPostId = value.string("pending_post_id"),
+        fileIds = value.stringList("file_ids"),
+        files = metadata
+            ?.get("files")
+            ?.arrayOrNull()
+            ?.mapNotNull { it.objectOrNull()?.let(::parseFile) }
+            .orEmpty(),
+        linkPreviews = metadata
+            ?.get("embeds")
+            ?.arrayOrNull()
+            ?.mapNotNull { it.objectOrNull()?.let(::parseLinkPreview) }
+            .orEmpty(),
+        hasMetadata = metadata != null,
+        editAt = value.long("edit_at"),
+    )
+}
+
+internal fun parseLinkPreview(value: JsonObject): LinkPreview? {
+    if (value.string("type") != "opengraph") return null
+    val url = value.string("url").trim()
+    if (url.isBlank()) return null
+    val data = value["data"]?.objectOrNull() ?: return null
+    val title = data.string("title").trim()
+    val description = data.string("description").trim()
+    val siteName = data.string("site_name").trim()
+    val imageUrl = data["images"]
         ?.arrayOrNull()
-        ?.mapNotNull { it.objectOrNull()?.let(::parseFile) }
-        .orEmpty(),
-    editAt = value.long("edit_at"),
-)
+        ?.asSequence()
+        ?.mapNotNull { it.objectOrNull() }
+        ?.mapNotNull { image ->
+            image.string("secure_url").ifBlank { image.string("url") }.trim().ifBlank { null }
+        }
+        ?.firstOrNull()
+    if (title.isBlank() && description.isBlank() && siteName.isBlank()) return null
+    return LinkPreview(
+        url = url,
+        title = title,
+        description = description,
+        siteName = siteName,
+        imageUrl = imageUrl,
+    )
+}
 
 internal fun parseFiles(json: String): List<MattermostFile> =
     mattermostJson.parseToJsonElement(json).jsonArray.mapNotNull {
