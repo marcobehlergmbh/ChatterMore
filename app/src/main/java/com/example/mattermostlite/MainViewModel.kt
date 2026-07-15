@@ -34,6 +34,14 @@ sealed interface ScreenState {
     ) : ScreenState
 }
 
+data class MessageEditState(
+    val postId: String,
+    val originalMessage: String,
+    val draftMessage: String,
+    val submitting: Boolean = false,
+    val failed: Boolean = false,
+)
+
 class MainViewModel(
     private val container: AppContainer,
     unsupportedMessage: String,
@@ -45,10 +53,13 @@ class MainViewModel(
         unsupportedMessage = unsupportedMessage,
     )
     private val _screen = MutableStateFlow<ScreenState>(ScreenState.Loading)
+    private val _messageEdit = MutableStateFlow<MessageEditState?>(null)
     private var benchmarkItems: List<FeedItem>? = null
+    private var currentUserId: String? = null
     private var loadingOlder = false
 
     val screen: StateFlow<ScreenState> = _screen.asStateFlow()
+    val messageEdit: StateFlow<MessageEditState?> = _messageEdit.asStateFlow()
     val mutations: SharedFlow<FeedMutation> = repository.mutations
     val connectionState: StateFlow<ConnectionState> = repository.connectionState
     val refreshing: StateFlow<Boolean> = repository.refreshing
@@ -68,14 +79,16 @@ class MainViewModel(
 
     fun connect(config: ServerConfig, persist: Boolean = true) {
         if ((_screen.value as? ScreenState.Setup)?.connecting == true) return
+        _messageEdit.value = null
         _screen.value = ScreenState.Setup(config = config, connecting = true)
         viewModelScope.launch {
             runCatching {
                 val normalized = container.api.normalizedConfig(config)
                 repository.initialize(normalized)
             }
-                .onSuccess { (channel, _, authenticatedConfig) ->
+                .onSuccess { (channel, user, authenticatedConfig) ->
                     val normalized = container.api.normalizedConfig(config)
+                    currentUserId = user.id
                     container.imageLoader.configure(authenticatedConfig)
                     if (persist) container.configStore.save(normalized)
                     _screen.value = ScreenState.Channel(
@@ -83,6 +96,7 @@ class MainViewModel(
                     )
                 }
                 .onFailure { error ->
+                    currentUserId = null
                     if (!persist) container.configStore.clear()
                     _screen.value = ScreenState.Setup(
                         config = config.copy(password = ""),
@@ -94,6 +108,8 @@ class MainViewModel(
 
     fun clearConnection() {
         repository.close()
+        currentUserId = null
+        _messageEdit.value = null
         container.imageLoader.configure(null)
         container.configStore.clear()
         _screen.value = ScreenState.Setup()
@@ -149,6 +165,58 @@ class MainViewModel(
     fun send(message: String): Boolean {
         if (message.isBlank() || screen.value !is ScreenState.Channel) return false
         viewModelScope.launch(start = CoroutineStart.UNDISPATCHED) { repository.send(message) }
+        return true
+    }
+
+    fun beginEdit(item: FeedItem): Boolean {
+        val postId = item.serverId ?: return false
+        if (
+            item.deliveryState != DeliveryState.SENT ||
+            item.userId != currentUserId ||
+            _messageEdit.value?.submitting == true
+        ) {
+            return false
+        }
+        if (_messageEdit.value?.postId != postId) {
+            _messageEdit.value = MessageEditState(
+                postId = postId,
+                originalMessage = item.message,
+                draftMessage = item.message,
+            )
+        }
+        return true
+    }
+
+    fun cancelEdit() {
+        if (_messageEdit.value?.submitting != true) _messageEdit.value = null
+    }
+
+    fun updateEditDraft(message: String) {
+        val edit = _messageEdit.value ?: return
+        if (!edit.submitting && edit.draftMessage != message) {
+            _messageEdit.value = edit.copy(draftMessage = message, failed = false)
+        }
+    }
+
+    fun submitEdit(message: String): Boolean {
+        val edit = _messageEdit.value ?: return false
+        if (message.isBlank() || edit.submitting) return false
+        if (message == edit.originalMessage) {
+            _messageEdit.value = null
+            return true
+        }
+
+        _messageEdit.value = edit.copy(submitting = true, failed = false)
+        viewModelScope.launch(start = CoroutineStart.UNDISPATCHED) {
+            val succeeded = repository.edit(edit.postId, message)
+            val current = _messageEdit.value
+            if (current?.postId != edit.postId) return@launch
+            _messageEdit.value = if (succeeded) {
+                null
+            } else {
+                current.copy(submitting = false, failed = true)
+            }
+        }
         return true
     }
 

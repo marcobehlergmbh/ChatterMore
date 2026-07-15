@@ -28,7 +28,9 @@ import androidx.core.content.ContextCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.doOnPreDraw
 import androidx.core.view.isVisible
+import androidx.core.widget.doAfterTextChanged
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
@@ -47,11 +49,14 @@ import com.example.mattermostlite.model.DeliveryState
 import com.example.mattermostlite.model.FeedMutation
 import com.example.mattermostlite.model.FeedImage
 import com.example.mattermostlite.model.FeedFile
+import com.example.mattermostlite.model.FeedItem
 import com.example.mattermostlite.model.ServerConfig
 import com.example.mattermostlite.network.MattermostImageLoader
 import com.example.mattermostlite.ui.FeedAdapter
 import com.example.mattermostlite.ui.HistoryPrefetchPolicy
 import com.example.mattermostlite.ui.DownloadFileName
+import com.example.mattermostlite.ui.editFocusTopOffset
+import com.example.mattermostlite.ui.nextEditFocusTop
 import com.example.mattermostlite.ui.MessageScrollAnchor
 import com.example.mattermostlite.ui.SunoPlaybackController
 import com.example.mattermostlite.ui.YouTubeVideo
@@ -59,6 +64,12 @@ import com.example.mattermostlite.ui.VideoPlaybackErrorDetails
 import com.example.mattermostlite.ui.VideoPlaybackErrorKind
 import com.example.mattermostlite.ui.VideoPlaybackRestore
 import kotlinx.coroutines.launch
+
+private data class EditFocusAnchor(
+    val scrollAnchor: MessageScrollAnchor,
+    val itemHeight: Int,
+    var targetTop: Int,
+)
 
 class MainActivity : ComponentActivity() {
     private val viewModel: MainViewModel by viewModels {
@@ -82,7 +93,11 @@ class MainActivity : ComponentActivity() {
     private lateinit var channelTitle: TextView
     private lateinit var connectionStatus: TextView
     private lateinit var messageList: RecyclerView
+    private lateinit var editModeHeader: View
+    private lateinit var editModeLabel: TextView
+    private lateinit var cancelEditButton: ImageButton
     private lateinit var messageInput: EditText
+    private lateinit var sendButton: ImageButton
     private lateinit var latestProgress: ProgressBar
     private lateinit var newMessagesButton: Button
     private lateinit var layoutManager: LinearLayoutManager
@@ -104,6 +119,10 @@ class MainActivity : ComponentActivity() {
     private var pendingScrollAnchor: MessageScrollAnchor? = null
     private var lastBottomRefreshAt = 0L
     private var imeVisible = false
+    private var renderedEditingPostId: String? = null
+    private var editFocusAnchor: EditFocusAnchor? = null
+    private var anchoringEditSubmission = false
+    private val releaseEditFocusAnchor = Runnable { editFocusAnchor = null }
     private val refreshThreshold by lazy { 48f * resources.displayMetrics.density }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -154,6 +173,7 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
+        messageList.removeCallbacks(releaseEditFocusAnchor)
         fullscreenImageDialog?.dismiss()
         fullscreenImageDialog = null
         fullscreenVideoDialog?.dismiss()
@@ -176,7 +196,11 @@ class MainActivity : ComponentActivity() {
         channelTitle = findViewById(R.id.channelTitle)
         connectionStatus = findViewById(R.id.connectionStatus)
         messageList = findViewById(R.id.messageList)
+        editModeHeader = findViewById(R.id.editModeHeader)
+        editModeLabel = findViewById(R.id.editModeLabel)
+        cancelEditButton = findViewById(R.id.cancelEditButton)
         messageInput = findViewById(R.id.messageInput)
+        sendButton = findViewById(R.id.sendButton)
         latestProgress = findViewById(R.id.latestProgress)
         newMessagesButton = findViewById(R.id.newMessagesButton)
     }
@@ -197,7 +221,9 @@ class MainActivity : ComponentActivity() {
                 bars.right,
                 maxOf(bars.bottom, ime.bottom),
             )
-            if (keyboardOpened && keepBottom) {
+            if (editFocusAnchor != null) {
+                scheduleEditFocusRelease()
+            } else if (keyboardOpened && keepBottom) {
                 messageList.post { scrollToBottom(smooth = false) }
             }
             insets
@@ -218,10 +244,18 @@ class MainActivity : ComponentActivity() {
                 ),
             )
         }
-        findViewById<ImageButton>(R.id.sendButton).setOnClickListener {
+        sendButton.setOnClickListener {
             val message = messageInput.text.toString()
-            if (viewModel.send(message)) messageInput.text.clear()
+            if (viewModel.messageEdit.value == null) {
+                if (viewModel.send(message)) messageInput.text.clear()
+            } else {
+                submitMessageEdit(message)
+            }
         }
+        messageInput.doAfterTextChanged {
+            viewModel.updateEditDraft(it?.toString().orEmpty())
+        }
+        cancelEditButton.setOnClickListener { viewModel.cancelEdit() }
         findViewById<ImageButton>(R.id.settingsButton).setOnClickListener {
             AlertDialog.Builder(this)
                 .setTitle(R.string.change_connection)
@@ -247,6 +281,7 @@ class MainActivity : ComponentActivity() {
             onImageClick = ::showFullscreenImage,
             onFileClick = ::handleFileClick,
             onYouTubeClick = ::openYouTubeVideo,
+            onMessageLongPress = ::beginMessageEdit,
             imageLoader = imageLoader,
             sunoController = sunoController,
         )
@@ -255,6 +290,9 @@ class MainActivity : ComponentActivity() {
         messageList.itemAnimator = null
         messageList.setItemViewCacheSize(12)
         messageList.setHasFixedSize(false)
+        messageList.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ ->
+            correctEditFocusAfterLayout()
+        }
 
         var userGesture = false
         var userFling = false
@@ -325,8 +363,84 @@ class MainActivity : ComponentActivity() {
                 launch { viewModel.mutations.collect(::applyMutation) }
                 launch { viewModel.connectionState.collect(::renderConnection) }
                 launch { viewModel.refreshing.collect { latestProgress.isVisible = it } }
+                launch { viewModel.messageEdit.collect(::renderMessageEdit) }
             }
         }
+    }
+
+    private fun beginMessageEdit(item: FeedItem): Boolean {
+        val candidateAnchor = captureItemAnchor(item.key)
+        editFocusAnchor = candidateAnchor
+        messageList.removeCallbacks(releaseEditFocusAnchor)
+        if (!viewModel.beginEdit(item)) {
+            editFocusAnchor = null
+            return false
+        }
+        scheduleEditFocusRelease()
+        return true
+    }
+
+    private fun submitMessageEdit(message: String) {
+        val edit = viewModel.messageEdit.value ?: return
+        val submissionAnchor = captureServerPostAnchor(edit.postId)
+        if (submissionAnchor != null) {
+            editFocusAnchor = submissionAnchor
+            anchoringEditSubmission = true
+            messageList.removeCallbacks(releaseEditFocusAnchor)
+        }
+        if (!viewModel.submitEdit(message) && submissionAnchor != null) {
+            anchoringEditSubmission = false
+            scheduleEditFocusRelease()
+        }
+    }
+
+    private fun renderMessageEdit(state: MessageEditState?) {
+        val previousPostId = renderedEditingPostId
+        editModeHeader.isVisible = state != null
+
+        if (state != null) {
+            if (previousPostId != state.postId) {
+                messageInput.setText(state.draftMessage)
+                scheduleEditFocusRelease()
+                focusMessageInputForEdit()
+            }
+            editModeLabel.setText(
+                when {
+                    state.submitting -> R.string.updating_message
+                    state.failed -> R.string.edit_message_failed
+                    else -> R.string.editing_message
+                },
+            )
+            editModeLabel.setTextColor(
+                ContextCompat.getColor(
+                    this,
+                    if (state.failed) R.color.error else R.color.mattermost_blue,
+                ),
+            )
+            messageInput.isEnabled = true
+            sendButton.isEnabled = !state.submitting
+            cancelEditButton.isEnabled = !state.submitting
+            if (state.failed && anchoringEditSubmission) {
+                anchoringEditSubmission = false
+                scheduleEditFocusRelease()
+            }
+        } else {
+            if (previousPostId != null) messageInput.text.clear()
+            messageInput.isEnabled = true
+            sendButton.isEnabled = true
+            cancelEditButton.isEnabled = true
+            if (previousPostId != null && anchoringEditSubmission && editFocusAnchor != null) {
+                anchoringEditSubmission = false
+                messageList.doOnPreDraw {
+                    correctEditFocusAfterLayout()
+                    scheduleEditFocusRelease()
+                }
+            } else {
+                editFocusAnchor = null
+                messageList.removeCallbacks(releaseEditFocusAnchor)
+            }
+        }
+        renderedEditingPostId = state?.postId
     }
 
     private fun renderScreen(state: ScreenState) {
@@ -435,6 +549,9 @@ class MainActivity : ComponentActivity() {
                 }
             }
             else -> Unit
+        }
+        if (editFocusAnchor != null) {
+            messageList.doOnPreDraw { correctEditFocusAfterLayout() }
         }
     }
 
@@ -649,6 +766,57 @@ class MainActivity : ComponentActivity() {
         )
     }
 
+    private fun captureItemAnchor(itemKey: String): EditFocusAnchor? {
+        val position = adapter.positionOf(itemKey)
+        if (position == RecyclerView.NO_POSITION) return null
+        val itemView = layoutManager.findViewByPosition(position) ?: return null
+        return EditFocusAnchor(
+            scrollAnchor = MessageScrollAnchor(
+                itemKey = itemKey,
+                fallbackPosition = position,
+                topOffset = itemView.top,
+            ),
+            itemHeight = itemView.height,
+            targetTop = itemView.top,
+        )
+    }
+
+    private fun captureServerPostAnchor(serverId: String): EditFocusAnchor? {
+        val position = adapter.positionOfServerId(serverId)
+        val item = adapter.itemAt(position) ?: return null
+        return captureItemAnchor(item.key)
+    }
+
+    private fun scheduleEditFocusRelease() {
+        if (editFocusAnchor == null) return
+        messageList.removeCallbacks(releaseEditFocusAnchor)
+        messageList.postDelayed(releaseEditFocusAnchor, EDIT_FOCUS_HOLD_MS)
+    }
+
+    private fun correctEditFocusAfterLayout() {
+        val anchor = editFocusAnchor ?: return
+        val scrollAnchor = anchor.scrollAnchor
+        val keyedPosition = adapter.positionOf(scrollAnchor.itemKey)
+            .takeUnless { it == RecyclerView.NO_POSITION }
+        val position = scrollAnchor.resolvePosition(adapter.itemCount, keyedPosition) ?: return
+        val calculatedTargetTop = editFocusTopOffset(
+            originalTop = scrollAnchor.topOffset,
+            itemHeight = anchor.itemHeight,
+            viewportHeight = messageList.height,
+            paddingTop = messageList.paddingTop,
+            paddingBottom = messageList.paddingBottom,
+        )
+        val targetTop = nextEditFocusTop(anchor.targetTop, calculatedTargetTop)
+        anchor.targetTop = targetTop
+        val itemView = layoutManager.findViewByPosition(position)
+        if (itemView == null) {
+            layoutManager.scrollToPositionWithOffset(position, targetTop)
+            return
+        }
+        val scrollDelta = itemView.top - targetTop
+        if (scrollDelta != 0) messageList.scrollBy(0, scrollDelta)
+    }
+
     private fun restoreScrollAnchor(anchor: MessageScrollAnchor?) {
         if (anchor == null) return
         val keyedPosition = adapter.positionOf(anchor.itemKey)
@@ -720,9 +888,29 @@ class MainActivity : ComponentActivity() {
         currentFocus?.let { manager.hideSoftInputFromWindow(it.windowToken, 0) }
     }
 
+    private fun focusMessageInputForEdit() {
+        messageInput.post {
+            requestMessageInputFocus()
+            messageInput.postDelayed(::requestMessageInputFocus, EDIT_FOCUS_REASSERT_MS)
+        }
+    }
+
+    private fun requestMessageInputFocus() {
+        if (viewModel.messageEdit.value == null) return
+        messageInput.isFocusableInTouchMode = true
+        messageInput.requestFocus()
+        messageInput.setSelection(messageInput.text.length)
+        WindowCompat.getInsetsController(window, messageInput)
+            .show(WindowInsetsCompat.Type.ime())
+        val manager = getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager
+        manager.showSoftInput(messageInput, InputMethodManager.SHOW_IMPLICIT)
+    }
+
     private companion object {
         const val VIDEO_CONNECT_TIMEOUT_MS = 10_000
         const val VIDEO_READ_TIMEOUT_MS = 20_000
+        const val EDIT_FOCUS_HOLD_MS = 800L
+        const val EDIT_FOCUS_REASSERT_MS = 140L
         const val EXTRA_BENCHMARK_MESSAGE_COUNT = "benchmark_message_count"
         const val STATE_SCROLL_ITEM_KEY = "scroll_item_key"
         const val STATE_SCROLL_POSITION = "scroll_position"

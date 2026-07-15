@@ -53,6 +53,7 @@ data class MattermostPost(
     val pendingPostId: String,
     val fileIds: List<String> = emptyList(),
     val files: List<MattermostFile> = emptyList(),
+    val editAt: Long = 0,
 )
 
 data class MattermostFile(
@@ -120,6 +121,7 @@ data class FeedItem(
     val deliveryState: DeliveryState,
     val images: List<FeedImage> = emptyList(),
     val files: List<FeedFile> = emptyList(),
+    val editAt: Long = 0,
 )
 
 enum class ConnectionState {

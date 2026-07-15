@@ -157,6 +157,21 @@ class MattermostApi(
         )
     }
 
+    suspend fun patchPost(
+        config: AuthenticatedServerConfig,
+        postId: String,
+        message: String,
+    ): MattermostPost {
+        val body = patchPostBody(message).toRequestBody(JSON_MEDIA_TYPE)
+        return parsePost(
+            execute(
+                request(config, apiUrl(config, "posts", postId, "patch")).newBuilder()
+                    .put(body)
+                    .build(),
+            ),
+        )
+    }
+
     fun normalizedConfig(config: ServerConfig): ServerConfig {
         val url = config.baseUrl.trim().trimEnd('/').toHttpUrlOrNull()
             ?: throw IllegalArgumentException("Enter a valid server URL")

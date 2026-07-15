@@ -1,5 +1,6 @@
 package com.example.mattermostlite.network
 
+import com.example.mattermostlite.model.AuthenticatedServerConfig
 import com.example.mattermostlite.model.ServerConfig
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.jsonObject
@@ -70,11 +71,55 @@ class MattermostApiTest {
         }
     }
 
+    @Test
+    fun `patches a post message with the authenticated Mattermost endpoint`() = runBlocking {
+        var captured: CapturedRequest? = null
+        val client = OkHttpClient.Builder()
+            .addInterceptor { chain ->
+                val request = chain.request()
+                captured = request.capture()
+                Response.Builder()
+                    .request(request)
+                    .protocol(Protocol.HTTP_1_1)
+                    .code(200)
+                    .message("OK")
+                    .body(
+                        """{"id":"post-1","channel_id":"channel-1","user_id":"user-1","message":"updated","create_at":10,"update_at":20,"edit_at":20}"""
+                            .toResponseBody(JSON_MEDIA_TYPE),
+                    )
+                    .build()
+            }
+            .build()
+        val api = MattermostApi(client)
+
+        val post = api.patchPost(
+            AuthenticatedServerConfig(
+                baseUrl = "https://mattermost.example.com",
+                teamName = "engineering",
+                channelName = "town-square",
+                token = "session-token",
+            ),
+            postId = "post-1",
+            message = "updated",
+        )
+
+        assertEquals("updated", post.message)
+        assertEquals(20L, post.editAt)
+        assertEquals("/api/v4/posts/post-1/patch", captured?.path)
+        assertEquals("PUT", captured?.method)
+        assertEquals("Bearer session-token", captured?.authorization)
+        assertEquals(
+            "updated",
+            captured?.body?.let { mattermostJson.parseToJsonElement(it).jsonObject.string("message") },
+        )
+    }
+
     private fun Request.capture(): CapturedRequest {
         val buffer = Buffer()
         body?.writeTo(buffer)
         return CapturedRequest(
             path = url.encodedPath,
+            method = method,
             authorization = header("Authorization"),
             body = buffer.readUtf8(),
         )
@@ -82,6 +127,7 @@ class MattermostApiTest {
 
     private data class CapturedRequest(
         val path: String,
+        val method: String,
         val authorization: String?,
         val body: String,
     )

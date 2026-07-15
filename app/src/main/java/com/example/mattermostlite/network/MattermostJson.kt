@@ -86,6 +86,7 @@ internal fun parsePost(value: JsonObject): MattermostPost = MattermostPost(
         ?.arrayOrNull()
         ?.mapNotNull { it.objectOrNull()?.let(::parseFile) }
         .orEmpty(),
+    editAt = value.long("edit_at"),
 )
 
 internal fun parseFiles(json: String): List<MattermostFile> =
@@ -122,6 +123,10 @@ internal fun createPostBody(
     put("channel_id", channelId)
     put("message", message)
     put("pending_post_id", pendingPostId)
+}.toString()
+
+internal fun patchPostBody(message: String): String = buildJsonObject {
+    put("message", message)
 }.toString()
 
 internal fun loginBody(username: String, password: String): String = buildJsonObject {

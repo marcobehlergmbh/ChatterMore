@@ -123,6 +123,18 @@ class MattermostJsonTest {
     }
 
     @Test
+    fun `parses edit timestamp and creates a message patch body`() {
+        val post = parsePost(
+            """{"id":"post","channel_id":"c","user_id":"u","message":"updated","create_at":1,"update_at":2,"edit_at":2}""",
+        )
+        val patch = mattermostJson.parseToJsonElement(patchPostBody("updated")).jsonObject
+
+        assertEquals(2L, post.editAt)
+        assertEquals("updated", patch.string("message"))
+        assertEquals(setOf("message"), patch.keys)
+    }
+
+    @Test
     fun `creates username password login body`() {
         val json = mattermostJson.parseToJsonElement(loginBody("marco", "quote\"slash\\" )).jsonObject
 

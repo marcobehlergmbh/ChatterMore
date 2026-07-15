@@ -168,6 +168,24 @@ class ChannelRepository(
         return submitPending(pendingId, message)
     }
 
+    suspend fun edit(postId: String, message: String): Boolean {
+        if (message.isBlank()) return false
+        val canEdit = feedMutex.withLock {
+            feed.post(postId)?.let { item ->
+                item.userId == currentUser.id && item.deliveryState == DeliveryState.SENT
+            } == true
+        }
+        if (!canEdit) return false
+
+        return try {
+            val post = api.patchPost(config, postId, message)
+            emitAll(feedMutex.withLock { feed.merge(listOf(post), listOf(currentUser)) })
+            true
+        } catch (_: Exception) {
+            false
+        }
+    }
+
     suspend fun retry(pendingId: String) {
         val pending = feedMutex.withLock {
             val item = feed.pending(pendingId) ?: return

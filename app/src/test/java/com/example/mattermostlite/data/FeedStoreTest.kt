@@ -246,6 +246,15 @@ class FeedStoreTest {
         assertEquals("notes.pdf", store.snapshot().single().files.single().name)
     }
 
+    @Test
+    fun `exposes the server edit timestamp for the edited marker`() {
+        val store = FeedStore("Unsupported")
+
+        store.replace(listOf(post("edited", 1).copy(editAt = 2, updateAt = 2)), listOf(user))
+
+        assertEquals(2L, store.snapshot().single().editAt)
+    }
+
     private fun post(
         id: String,
         createAt: Long,

@@ -153,6 +153,8 @@ class FeedStore(
 
     fun pending(pendingId: String): FeedItem? = items.firstOrNull { it.pendingId == pendingId }
 
+    fun post(serverId: String): FeedItem? = items.firstOrNull { it.serverId == serverId }
+
     fun updateProfiles(profiles: Collection<MattermostUser>): List<FeedMutation.Update> {
         users.putAll(profiles.associateBy(MattermostUser::id))
         return items.mapIndexedNotNull { index, item ->
@@ -248,6 +250,7 @@ class FeedStore(
             deliveryState = DeliveryState.SENT,
             images = images,
             files = files,
+            editAt = post.editAt,
         )
     }
 

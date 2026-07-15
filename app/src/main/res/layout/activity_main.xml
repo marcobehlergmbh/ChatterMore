@@ -194,38 +194,91 @@
             android:background="@color/divider" />
 
         <LinearLayout
+            android:id="@+id/messageComposer"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:background="@color/surface"
-            android:gravity="bottom"
-            android:minHeight="56dp"
-            android:orientation="horizontal"
-            android:paddingStart="12dp"
-            android:paddingEnd="4dp"
-            android:paddingTop="4dp"
-            android:paddingBottom="4dp">
+            android:orientation="vertical">
 
-            <EditText
-                android:id="@+id/messageInput"
-                android:layout_width="0dp"
+            <LinearLayout
+                android:id="@+id/editModeHeader"
+                android:layout_width="match_parent"
+                android:layout_height="32dp"
+                android:gravity="center_vertical"
+                android:orientation="horizontal"
+                android:paddingStart="12dp"
+                android:paddingEnd="4dp"
+                android:visibility="gone">
+
+                <View
+                    android:layout_width="2dp"
+                    android:layout_height="18dp"
+                    android:background="@color/mattermost_blue" />
+
+                <ImageView
+                    android:layout_width="16dp"
+                    android:layout_height="16dp"
+                    android:layout_marginStart="8dp"
+                    android:contentDescription="@null"
+                    android:src="@drawable/ic_edit"
+                    android:tint="@color/mattermost_blue" />
+
+                <TextView
+                    android:id="@+id/editModeLabel"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="8dp"
+                    android:layout_weight="1"
+                    android:fontFamily="sans-serif-medium"
+                    android:text="@string/editing_message"
+                    android:textColor="@color/mattermost_blue"
+                    android:textSize="13sp" />
+
+                <ImageButton
+                    android:id="@+id/cancelEditButton"
+                    android:layout_width="32dp"
+                    android:layout_height="32dp"
+                    android:background="?android:attr/selectableItemBackgroundBorderless"
+                    android:contentDescription="@string/cancel_edit"
+                    android:padding="7dp"
+                    android:src="@drawable/ic_close"
+                    android:tint="@color/text_secondary"
+                    android:tooltipText="@string/cancel_edit" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:hint="@string/message_hint"
-                android:importantForAutofill="no"
-                android:inputType="textCapSentences|textMultiLine"
-                android:maxHeight="128dp"
-                android:maxLines="5"
-                android:minHeight="48dp" />
+                android:gravity="bottom"
+                android:minHeight="56dp"
+                android:orientation="horizontal"
+                android:paddingStart="12dp"
+                android:paddingEnd="4dp"
+                android:paddingTop="4dp"
+                android:paddingBottom="4dp">
 
-            <ImageButton
-                android:id="@+id/sendButton"
-                android:layout_width="48dp"
-                android:layout_height="48dp"
-                android:background="?android:attr/selectableItemBackgroundBorderless"
-                android:contentDescription="@string/send"
-                android:padding="12dp"
-                android:src="@drawable/ic_send"
-                android:tooltipText="@string/send" />
+                <EditText
+                    android:id="@+id/messageInput"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:hint="@string/message_hint"
+                    android:importantForAutofill="no"
+                    android:inputType="textCapSentences|textMultiLine"
+                    android:maxHeight="128dp"
+                    android:maxLines="5"
+                    android:minHeight="48dp" />
+
+                <ImageButton
+                    android:id="@+id/sendButton"
+                    android:layout_width="48dp"
+                    android:layout_height="48dp"
+                    android:background="?android:attr/selectableItemBackgroundBorderless"
+                    android:contentDescription="@string/send"
+                    android:padding="12dp"
+                    android:src="@drawable/ic_send"
+                    android:tooltipText="@string/send" />
+            </LinearLayout>
         </LinearLayout>
     </LinearLayout>
 </merge>

@@ -1,7 +1,21 @@
 package com.example.mattermostlite.ui
 
+import android.animation.Animator
+import android.animation.AnimatorListenerAdapter
+import android.animation.AnimatorSet
+import android.animation.ObjectAnimator
+import android.content.Context
 import android.graphics.Paint
+import android.graphics.Color
+import android.graphics.Typeface
+import android.graphics.drawable.GradientDrawable
+import android.text.Spannable
+import android.text.SpannableStringBuilder
 import android.text.method.LinkMovementMethod
+import android.text.style.ForegroundColorSpan
+import android.text.style.RelativeSizeSpan
+import android.text.style.StyleSpan
+import android.view.HapticFeedbackConstants
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
@@ -27,6 +41,7 @@ class FeedAdapter(
     private val onImageClick: (FeedImage) -> Unit,
     private val onFileClick: (FeedFile) -> Unit,
     private val onYouTubeClick: (YouTubeVideo) -> Unit,
+    private val onMessageLongPress: (FeedItem) -> Boolean,
     private val imageLoader: MattermostImageLoader,
     private val sunoController: SunoPlaybackController,
 ) : RecyclerView.Adapter<FeedAdapter.MessageViewHolder>() {
@@ -127,6 +142,9 @@ class FeedAdapter(
 
     fun positionOf(key: String): Int = positions[key] ?: RecyclerView.NO_POSITION
 
+    fun positionOfServerId(serverId: String): Int =
+        items.indexOfFirst { it.serverId == serverId }
+
     private fun rebuildPositions(start: Int = 0) {
         if (start == 0) positions.clear()
         for (index in start until items.size) positions[items[index].key] = index
@@ -168,13 +186,18 @@ class FeedAdapter(
         private var boundAvatarUserId: String? = null
         private var youtubeRequest: MattermostImageLoader.ImageRequest? = null
         private var boundYouTubeId: String? = null
+        private var tapGlowAnimator: AnimatorSet? = null
+        private var tapGlowDrawable: GradientDrawable? = null
 
         init {
             body.movementMethod = LinkMovementMethod.getInstance()
             body.linksClickable = true
+            itemView.setOnLongClickListener { handleLongPress() }
+            body.setOnLongClickListener { handleLongPress() }
         }
 
         fun bind(item: FeedItem, isContinuation: Boolean, isGroupEnd: Boolean) {
+            resetTapGlow()
             if (boundAsContinuation != isContinuation || boundAsGroupEnd != isGroupEnd) {
                 boundAsContinuation = isContinuation
                 boundAsGroupEnd = isGroupEnd
@@ -195,7 +218,7 @@ class FeedAdapter(
             } else {
                 clearAvatar()
             }
-            body.text = linkedMessage(item.message)
+            body.text = messageText(item, itemView.context)
             body.visibility = if (item.message.isBlank()) View.GONE else View.VISIBLE
             bindSuno(sunoSong(item.message))
             bindYouTube(youtubeVideo(item.message))
@@ -253,6 +276,7 @@ class FeedAdapter(
         }
 
         fun recycle() {
+            resetTapGlow()
             clearAvatar()
             clearSuno()
             clearYouTube()
@@ -334,12 +358,72 @@ class FeedAdapter(
             }
         }
 
+        private fun handleLongPress(): Boolean {
+            val position = bindingAdapterPosition
+            if (position == RecyclerView.NO_POSITION) return false
+            val handled = onMessageLongPress(items[position])
+            if (handled) {
+                itemView.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+                playTapGlow()
+            }
+            return handled
+        }
+
+        private fun playTapGlow() {
+            resetTapGlow()
+            val glowColor = ContextCompat.getColor(itemView.context, R.color.mattermost_blue)
+            val glow = GradientDrawable(
+                GradientDrawable.Orientation.LEFT_RIGHT,
+                intArrayOf(Color.TRANSPARENT, glowColor, Color.TRANSPARENT),
+            ).apply {
+                cornerRadius = TAP_GLOW_CORNER_DP * itemView.resources.displayMetrics.density
+                alpha = 0
+            }
+            tapGlowDrawable = glow
+            itemView.background = glow
+
+            val fadeIn = ObjectAnimator.ofInt(glow, "alpha", 0, TAP_GLOW_PEAK_ALPHA).apply {
+                duration = TAP_GLOW_IN_MS
+            }
+            val fadeOut = ObjectAnimator.ofInt(glow, "alpha", TAP_GLOW_PEAK_ALPHA, 0).apply {
+                duration = TAP_GLOW_OUT_MS
+                startDelay = TAP_GLOW_HOLD_MS
+            }
+            tapGlowAnimator = AnimatorSet().apply {
+                playSequentially(fadeIn, fadeOut)
+                addListener(object : AnimatorListenerAdapter() {
+                    override fun onAnimationEnd(animation: Animator) {
+                        if (itemView.background === glow) itemView.background = null
+                        if (tapGlowDrawable === glow) {
+                            tapGlowDrawable = null
+                            tapGlowAnimator = null
+                        }
+                    }
+                })
+                start()
+            }
+        }
+
+        private fun resetTapGlow() {
+            val glow = tapGlowDrawable
+            tapGlowAnimator?.removeAllListeners()
+            tapGlowAnimator?.cancel()
+            tapGlowAnimator = null
+            tapGlowDrawable = null
+            if (itemView.background === glow) itemView.background = null
+        }
+
     }
 
     private companion object {
         const val LINK_CACHE_CHARACTERS = 256 * 1_024
         const val PAYLOAD_CONTENT = "content"
         const val PAYLOAD_GROUPING = "grouping"
+        const val TAP_GLOW_CORNER_DP = 12f
+        const val TAP_GLOW_PEAK_ALPHA = 105
+        const val TAP_GLOW_IN_MS = 120L
+        const val TAP_GLOW_HOLD_MS = 70L
+        const val TAP_GLOW_OUT_MS = 360L
 
         fun stableHash(value: String): Long {
             var hash = -0x340d631b7bdddcdbL
@@ -358,6 +442,34 @@ class FeedAdapter(
             linkedMessages.put(message, parsed)
         }
         return parsed
+    }
+
+    private fun messageText(item: FeedItem, context: Context): CharSequence {
+        val message = linkedMessage(item.message)
+        if (item.editAt <= 0L || item.message.isBlank()) return message
+        return SpannableStringBuilder(message).apply {
+            append(' ')
+            val markerStart = length
+            append(context.getString(R.string.edited_hint))
+            setSpan(
+                ForegroundColorSpan(ContextCompat.getColor(context, R.color.message_metadata)),
+                markerStart,
+                length,
+                Spannable.SPAN_EXCLUSIVE_EXCLUSIVE,
+            )
+            setSpan(
+                RelativeSizeSpan(0.78f),
+                markerStart,
+                length,
+                Spannable.SPAN_EXCLUSIVE_EXCLUSIVE,
+            )
+            setSpan(
+                StyleSpan(Typeface.ITALIC),
+                markerStart,
+                length,
+                Spannable.SPAN_EXCLUSIVE_EXCLUSIVE,
+            )
+        }
     }
 
     private fun youtubeVideo(message: String): YouTubeVideo? {
