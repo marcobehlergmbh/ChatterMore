@@ -1,6 +1,7 @@
 package com.example.mattermostlite.network
 
 import com.example.mattermostlite.model.SocketSignal
+import com.example.mattermostlite.model.UserPresence
 import kotlinx.serialization.json.jsonObject
 import okhttp3.OkHttpClient
 import org.junit.Assert.assertEquals
@@ -10,6 +11,20 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class MattermostJsonTest {
+    @Test
+    fun `parses user statuses and maps Mattermost availability to three states`() {
+        val statuses = parseUserStatuses(
+            """[{"user_id":"active","status":"online"},{"user_id":"busy","status":"dnd"},{"user_id":"gone","status":"offline"}]""",
+        )
+
+        assertEquals(listOf("active", "busy", "gone"), statuses.map { it.userId })
+        assertEquals(UserPresence.ACTIVE, UserPresence.fromMattermost(statuses[0].status))
+        assertEquals(UserPresence.AWAY, UserPresence.fromMattermost(statuses[1].status))
+        assertEquals(UserPresence.OFFLINE, UserPresence.fromMattermost(statuses[2].status))
+        assertEquals(UserPresence.AWAY, UserPresence.fromMattermost("ooo"))
+        assertEquals(UserPresence.OFFLINE, UserPresence.fromMattermost("future-status"))
+    }
+
     @Test
     fun `parses Mattermost hello event used for the resume cursor`() {
         val signal = MattermostSocket(OkHttpClient()).parseSignal(
@@ -114,6 +129,25 @@ class MattermostJsonTest {
         assertEquals("p", signal.post.id)
         assertEquals("c", signal.channelId)
         assertEquals(7L, signal.sequence)
+    }
+
+    @Test
+    fun `parses status change websocket envelope`() {
+        val signal = MattermostSocket(OkHttpClient()).parseSignal(
+            """
+            {
+              "event":"status_change",
+              "seq":9,
+              "data":{"user_id":"user-1","status":"away"}
+            }
+            """.trimIndent(),
+        )
+
+        assertTrue(signal is SocketSignal.StatusChange)
+        signal as SocketSignal.StatusChange
+        assertEquals("user-1", signal.userId)
+        assertEquals("away", signal.status)
+        assertEquals(9L, signal.sequence)
     }
 
     @Test

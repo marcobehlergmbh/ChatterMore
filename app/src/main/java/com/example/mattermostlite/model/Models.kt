@@ -28,6 +28,25 @@ data class MattermostUser(
             .ifBlank { username.ifBlank { id } }
 }
 
+data class MattermostUserStatus(
+    val userId: String,
+    val status: String,
+)
+
+enum class UserPresence {
+    ACTIVE,
+    AWAY,
+    OFFLINE;
+
+    companion object {
+        fun fromMattermost(status: String): UserPresence = when (status.lowercase()) {
+            "online" -> ACTIVE
+            "away", "dnd", "ooo" -> AWAY
+            else -> OFFLINE
+        }
+    }
+}
+
 data class MattermostChannel(
     val id: String,
     val name: String,
@@ -156,6 +175,12 @@ sealed interface SocketSignal {
         val event: String,
         val post: MattermostPost,
         val channelId: String,
+        val sequence: Long,
+    ) : SocketSignal
+
+    data class StatusChange(
+        val userId: String,
+        val status: String,
         val sequence: Long,
     ) : SocketSignal
 

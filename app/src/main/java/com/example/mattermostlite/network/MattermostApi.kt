@@ -8,6 +8,7 @@ import com.example.mattermostlite.model.MattermostException
 import com.example.mattermostlite.model.MattermostPost
 import com.example.mattermostlite.model.MattermostTeam
 import com.example.mattermostlite.model.MattermostUser
+import com.example.mattermostlite.model.MattermostUserStatus
 import com.example.mattermostlite.model.PostPage
 import com.example.mattermostlite.model.ServerConfig
 import com.example.mattermostlite.model.TeamNotFoundException
@@ -134,6 +135,21 @@ class MattermostApi(
         return parseUsers(
             execute(
                 request(config, apiUrl(config, "users", "ids")).newBuilder()
+                    .post(body)
+                    .build(),
+            ),
+        )
+    }
+
+    suspend fun userStatuses(
+        config: AuthenticatedServerConfig,
+        ids: Collection<String>,
+    ): List<MattermostUserStatus> {
+        if (ids.isEmpty()) return emptyList()
+        val body = userIdsBody(ids).toRequestBody(JSON_MEDIA_TYPE)
+        return parseUserStatuses(
+            execute(
+                request(config, apiUrl(config, "users", "status", "ids")).newBuilder()
                     .post(body)
                     .build(),
             ),

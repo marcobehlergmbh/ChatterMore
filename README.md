@@ -15,7 +15,8 @@ A deliberately small, foreground-only Android client for one Mattermost channel.
 - Accepts Android single- and multi-file shares, preparing media previews or regular file attachments plus shared text without auto-sending.
 - Validates known attachment sizes against the Mattermost server limit before upload.
 - Renders authenticated image attachments from bounded server-generated previews.
-- Renders cached user avatars and lightweight YouTube thumbnail previews.
+- Renders cached user avatars with live Active, Away, or Offline presence badges.
+- Renders lightweight YouTube thumbnail previews.
 - Persists downloaded image bytes in a bounded app-private cache across launches.
 - Adds inline play/stop controls for shared Suno song links.
 - Streams authenticated video attachments in a full-screen player.
@@ -56,6 +57,7 @@ The password is encrypted with an AES-GCM key held by Android Keystore. It is ex
 - `MattermostImageLoader`: bounded authenticated preview requests, background downsampling, cancellation, and memory caching.
 - `MattermostSocket`: foreground WebSocket event flow with connection/sequence tracking.
 - `ChannelRepository`: socket lifecycle, cursor requests, author loading, refreshes, and optimistic sends.
+- `PresenceStore`: batched status snapshots with real-time WebSocket updates and race protection.
 - `FeedStore`: single canonical ordered feed, deduplication, pending reconciliation, and bounded memory.
 - `MainActivity` / `FeedAdapter`: XML Views and targeted RecyclerView mutations.
 

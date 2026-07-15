@@ -46,6 +46,10 @@
     <string name="close_fullscreen_image">Close full screen image</string>
     <string name="image_load_failed">Unable to load image</string>
     <string name="user_avatar">User avatar</string>
+    <string name="user_avatar_with_presence">%1$s, %2$s</string>
+    <string name="presence_active">Active</string>
+    <string name="presence_away">Away</string>
+    <string name="presence_offline">Offline</string>
     <string name="youtube">YouTube</string>
     <string name="youtube_video_preview">YouTube video preview</string>
     <string name="play_video_file">Play video %1$s</string>

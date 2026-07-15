@@ -31,6 +31,7 @@ import com.example.mattermostlite.model.DeliveryState
 import com.example.mattermostlite.model.FeedImage
 import com.example.mattermostlite.model.FeedFile
 import com.example.mattermostlite.model.FeedItem
+import com.example.mattermostlite.model.UserPresence
 import com.example.mattermostlite.network.MattermostImageLoader
 import java.time.Instant
 import java.time.ZoneId
@@ -47,6 +48,8 @@ class FeedAdapter(
 ) : RecyclerView.Adapter<FeedAdapter.MessageViewHolder>() {
     private val items = mutableListOf<FeedItem>()
     private val positions = mutableMapOf<String, Int>()
+    private val avatarPositionsByUserId = mutableMapOf<String, MutableList<Int>>()
+    private val presenceByUserId = mutableMapOf<String, UserPresence>()
     private val timeFormatter = DateTimeFormatter.ofPattern("HH:mm")
         .withZone(ZoneId.systemDefault())
     private val timeLabels = LruCache<Long, String>(2_048)
@@ -82,6 +85,22 @@ class FeedAdapter(
             isContinuation = MessageGrouping.isContinuation(items.getOrNull(position - 1), item),
             isGroupEnd = next == null || !MessageGrouping.isContinuation(item, next),
         )
+    }
+
+    override fun onBindViewHolder(
+        holder: MessageViewHolder,
+        position: Int,
+        payloads: MutableList<Any>,
+    ) {
+        if (payloads.isNotEmpty() && payloads.all { it == PAYLOAD_PRESENCE }) {
+            val item = items[position]
+            holder.bindPresence(
+                item = item,
+                isContinuation = MessageGrouping.isContinuation(items.getOrNull(position - 1), item),
+            )
+        } else {
+            super.onBindViewHolder(holder, position, payloads)
+        }
     }
 
     override fun onViewRecycled(holder: MessageViewHolder) {
@@ -120,6 +139,7 @@ class FeedAdapter(
         items[index] = item
         positions.remove(previousKey)
         positions[item.key] = index
+        rebuildUserPositions()
         val changedStart = (index - 1).coerceAtLeast(0)
         notifyItemRangeChanged(
             changedStart,
@@ -138,6 +158,19 @@ class FeedAdapter(
         if (index < items.size) notifyItemChanged(index, PAYLOAD_GROUPING)
     }
 
+    fun updatePresence(presence: Map<String, UserPresence>) {
+        val changedUserIds = (presenceByUserId.keys + presence.keys).filterTo(mutableSetOf()) { userId ->
+            (presenceByUserId[userId] ?: UserPresence.OFFLINE) !=
+                (presence[userId] ?: UserPresence.OFFLINE)
+        }
+        presenceByUserId.clear()
+        presenceByUserId.putAll(presence)
+        changedUserIds.asSequence()
+            .flatMap { avatarPositionsByUserId[it].orEmpty().asSequence() }
+            .distinct()
+            .forEach { notifyItemChanged(it, PAYLOAD_PRESENCE) }
+    }
+
     fun itemAt(position: Int): FeedItem? = items.getOrNull(position)
 
     fun positionOf(key: String): Int = positions[key] ?: RecyclerView.NO_POSITION
@@ -148,11 +181,22 @@ class FeedAdapter(
     private fun rebuildPositions(start: Int = 0) {
         if (start == 0) positions.clear()
         for (index in start until items.size) positions[items[index].key] = index
+        rebuildUserPositions()
+    }
+
+    private fun rebuildUserPositions() {
+        avatarPositionsByUserId.clear()
+        items.forEachIndexed { index, item ->
+            if (!MessageGrouping.isContinuation(items.getOrNull(index - 1), item)) {
+                avatarPositionsByUserId.getOrPut(item.userId) { mutableListOf() }.add(index)
+            }
+        }
     }
 
     inner class MessageViewHolder(view: View) : RecyclerView.ViewHolder(view) {
         private val header = view.findViewById<View>(R.id.messageHeader)
         private val avatar = view.findViewById<ImageView>(R.id.messageAvatar)
+        private val presenceBadge = view.findViewById<PresenceBadgeView>(R.id.messagePresence)
         private val author = view.findViewById<TextView>(R.id.messageAuthor)
         private val time = view.findViewById<TextView>(R.id.messageTime)
         private val body = view.findViewById<TextView>(R.id.messageBody)
@@ -218,6 +262,7 @@ class FeedAdapter(
             } else {
                 clearAvatar()
             }
+            bindPresence(item, isContinuation)
             body.text = messageText(item, itemView.context)
             body.visibility = if (item.message.isBlank()) View.GONE else View.VISIBLE
             bindSuno(sunoSong(item.message))
@@ -282,6 +327,29 @@ class FeedAdapter(
             clearYouTube()
             images?.clearImages()
             files?.clearFiles()
+            presenceBadge.visibility = View.GONE
+        }
+
+        fun bindPresence(item: FeedItem, isContinuation: Boolean) {
+            if (isContinuation) {
+                presenceBadge.visibility = View.GONE
+                return
+            }
+            val presence = presenceByUserId[item.userId] ?: UserPresence.OFFLINE
+            presenceBadge.presence = presence
+            presenceBadge.visibility = View.VISIBLE
+            val label = itemView.context.getString(
+                when (presence) {
+                    UserPresence.ACTIVE -> R.string.presence_active
+                    UserPresence.AWAY -> R.string.presence_away
+                    UserPresence.OFFLINE -> R.string.presence_offline
+                },
+            )
+            avatar.contentDescription = itemView.context.getString(
+                R.string.user_avatar_with_presence,
+                item.author,
+                label,
+            )
         }
 
         private fun bindAvatar(userId: String) {
@@ -419,6 +487,7 @@ class FeedAdapter(
         const val LINK_CACHE_CHARACTERS = 256 * 1_024
         const val PAYLOAD_CONTENT = "content"
         const val PAYLOAD_GROUPING = "grouping"
+        const val PAYLOAD_PRESENCE = "presence"
         const val TAP_GLOW_CORNER_DP = 12f
         const val TAP_GLOW_PEAK_ALPHA = 105
         const val TAP_GLOW_IN_MS = 120L

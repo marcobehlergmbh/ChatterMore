@@ -101,6 +101,17 @@ class MattermostSocket(
                 )
             }
 
+            "status_change" -> {
+                val data = envelope["data"]?.jsonObject ?: return null
+                val userId = data.string("user_id")
+                if (userId.isBlank()) return null
+                SocketSignal.StatusChange(
+                    userId = userId,
+                    status = data.string("status"),
+                    sequence = sequence,
+                )
+            }
+
             else -> SocketSignal.Sequence(sequence)
         }
     }.getOrNull()

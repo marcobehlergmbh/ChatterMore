@@ -5,6 +5,7 @@ import com.example.mattermostlite.model.MattermostFile
 import com.example.mattermostlite.model.MattermostPost
 import com.example.mattermostlite.model.MattermostTeam
 import com.example.mattermostlite.model.MattermostUser
+import com.example.mattermostlite.model.MattermostUserStatus
 import com.example.mattermostlite.model.PostPage
 import com.example.mattermostlite.model.UNKNOWN_FILE_SIZE
 import com.example.mattermostlite.model.UploadCapabilities
@@ -39,6 +40,17 @@ internal fun parseUser(value: JsonObject): MattermostUser = MattermostUser(
 
 internal fun parseUsers(json: String): List<MattermostUser> =
     mattermostJson.parseToJsonElement(json).jsonArray.map { parseUser(it.jsonObject) }
+
+internal fun parseUserStatuses(json: String): List<MattermostUserStatus> =
+    mattermostJson.parseToJsonElement(json).jsonArray.mapNotNull { element ->
+        val value = element.objectOrNull() ?: return@mapNotNull null
+        val userId = value.string("user_id")
+        if (userId.isBlank()) return@mapNotNull null
+        MattermostUserStatus(
+            userId = userId,
+            status = value.string("status"),
+        )
+    }
 
 internal fun parseTeam(json: String): MattermostTeam {
     val value = mattermostJson.parseToJsonElement(json).jsonObject

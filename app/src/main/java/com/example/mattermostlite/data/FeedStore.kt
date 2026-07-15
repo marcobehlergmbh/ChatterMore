@@ -22,6 +22,8 @@ class FeedStore(
 
     fun snapshot(): List<FeedItem> = items.toList()
 
+    fun userIds(): Set<String> = items.mapTo(mutableSetOf(), FeedItem::userId)
+
     fun replace(
         posts: Collection<MattermostPost>,
         profiles: Collection<MattermostUser>,

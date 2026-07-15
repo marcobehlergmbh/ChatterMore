@@ -99,6 +99,7 @@ class MainViewModel(
     val mutations: SharedFlow<FeedMutation> = repository.mutations
     val connectionState: StateFlow<ConnectionState> = repository.connectionState
     val refreshing: StateFlow<Boolean> = repository.refreshing
+    val userPresence = repository.userPresence
 
     init {
         viewModelScope.launch {

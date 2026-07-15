@@ -523,6 +523,7 @@ class MainActivity : ComponentActivity() {
                 launch { viewModel.screen.collect(::renderScreen) }
                 launch { viewModel.mutations.collect(::applyMutation) }
                 launch { viewModel.connectionState.collect(::renderConnection) }
+                launch { viewModel.userPresence.collect(adapter::updatePresence) }
                 launch { viewModel.refreshing.collect { latestProgress.isVisible = it } }
                 launch { viewModel.messageEdit.collect(::renderMessageEdit) }
                 launch { viewModel.composer.collect(::renderComposer) }

@@ -13,6 +13,7 @@ import com.example.mattermostlite.model.ServerConfig
 import com.example.mattermostlite.model.SocketCursor
 import com.example.mattermostlite.model.SocketSignal
 import com.example.mattermostlite.model.UploadCapabilities
+import com.example.mattermostlite.model.UserPresence
 import com.example.mattermostlite.network.MattermostApi
 import com.example.mattermostlite.network.MattermostSocket
 import kotlinx.coroutines.CompletableDeferred
@@ -44,6 +45,7 @@ class ChannelRepository(
     unsupportedMessage: String,
 ) {
     private val feed = FeedStore(unsupportedMessage)
+    private val presenceStore = PresenceStore()
     private val feedMutex = Mutex()
     private val olderMutex = Mutex()
     private val refreshMutex = Mutex()
@@ -51,11 +53,13 @@ class ChannelRepository(
     private val _connectionState = MutableStateFlow(ConnectionState.OFFLINE)
     private val _refreshing = MutableStateFlow(false)
     private val _uploadCapabilities = MutableStateFlow(UploadCapabilities())
+    private val _userPresence = MutableStateFlow<Map<String, UserPresence>>(emptyMap())
 
     val mutations: SharedFlow<FeedMutation> = _mutations.asSharedFlow()
     val connectionState: StateFlow<ConnectionState> = _connectionState.asStateFlow()
     val refreshing: StateFlow<Boolean> = _refreshing.asStateFlow()
     val uploadCapabilities: StateFlow<UploadCapabilities> = _uploadCapabilities.asStateFlow()
+    val userPresence: StateFlow<Map<String, UserPresence>> = _userPresence.asStateFlow()
 
     private lateinit var config: AuthenticatedServerConfig
     private lateinit var channel: MattermostChannel
@@ -66,14 +70,19 @@ class ChannelRepository(
     private var socketJob: Job? = null
     private var socketCursor: SocketCursor? = null
     private var socketReady = CompletableDeferred<Unit>()
+    private var presenceGeneration = 0
+    private val inFlightPresence = mutableSetOf<Pair<Int, String>>()
 
     suspend fun initialize(
         rawConfig: ServerConfig,
     ): Triple<MattermostChannel, MattermostUser, AuthenticatedServerConfig> {
         stopSocket()
         initialized = false
+        presenceGeneration++
         socketCursor = null
         olderExhausted = false
+        presenceStore.clear()
+        _userPresence.value = emptyMap()
         _uploadCapabilities.value = UploadCapabilities()
         val (authenticatedConfig, authenticatedUser) = api.login(rawConfig)
         config = authenticatedConfig
@@ -88,6 +97,7 @@ class ChannelRepository(
         val page = api.posts(config, channel.id)
         val posts = page.orderedPosts
         val profiles = fetchProfiles(posts)
+        refreshPresence(posts.map(MattermostPost::userId) + currentUser.id)
         val mutation = feedMutex.withLock { feed.replace(posts, profiles + currentUser) }
         _mutations.emit(mutation)
         return Triple(channel, currentUser, config)
@@ -118,6 +128,7 @@ class ChannelRepository(
                 }
                 if (newVisibleCursor != visibleCursor) {
                     emitAll(mutations)
+                    ensurePresence(posts.map(MattermostPost::userId))
                     return
                 }
 
@@ -149,6 +160,7 @@ class ChannelRepository(
                     val posts = page.orderedPosts
                     val profiles = fetchProfiles(posts)
                     emitAll(feedMutex.withLock { feed.merge(posts, profiles) })
+                    ensurePresence(posts.map(MattermostPost::userId))
                     val next = posts.maxWithOrNull(POST_ORDER)?.id
                     if (posts.size < PAGE_SIZE || next.isNullOrBlank() || next == currentCursor) break
                     cursor = next
@@ -159,6 +171,7 @@ class ChannelRepository(
             val head = api.posts(config, channel.id)
             val profiles = fetchProfiles(head.orderedPosts)
             emitAll(feedMutex.withLock { feed.merge(head.orderedPosts, profiles) })
+            ensurePresence(head.orderedPosts.map(MattermostPost::userId))
         } finally {
             _refreshing.value = false
             refreshMutex.unlock()
@@ -230,6 +243,10 @@ class ChannelRepository(
 
     fun close() {
         stopSocket()
+        initialized = false
+        presenceGeneration++
+        presenceStore.clear()
+        _userPresence.value = emptyMap()
     }
 
     private suspend fun submitPending(
@@ -277,9 +294,11 @@ class ChannelRepository(
                                 if (!oldConnectionId.isNullOrBlank() && oldConnectionId != signal.connectionId) {
                                     scope.launch { refreshLatestSafely() }
                                 }
+                                scope.launch { refreshAllPresence() }
                             }
 
                             is SocketSignal.PostEvent -> handleSocketPost(signal)
+                            is SocketSignal.StatusChange -> handleStatusChange(signal)
                             is SocketSignal.Sequence -> {
                                 if (signal.sequence > 0L) {
                                     val expected = socketCursor?.nextSequence
@@ -342,7 +361,23 @@ class ChannelRepository(
                 }
             }
         }
+        ensurePresence(listOf(signal.post.userId))
         if (sequenceGap) scope.launch { refreshLatestSafely() }
+    }
+
+    private suspend fun handleStatusChange(signal: SocketSignal.StatusChange) {
+        val expected = socketCursor?.nextSequence
+        val sequenceGap = expected != null && signal.sequence != expected
+        socketCursor = socketCursor?.copy(nextSequence = signal.sequence + 1)
+        val isRelevant = presenceStore.isTracked(signal.userId) ||
+            feedMutex.withLock { signal.userId in feed.userIds() }
+        if (isRelevant && presenceStore.applyEvent(signal.userId, signal.status)) {
+            _userPresence.value = presenceStore.snapshot()
+        }
+        if (sequenceGap) scope.launch {
+            refreshLatestSafely()
+            refreshAllPresence()
+        }
     }
 
     private suspend fun fetchProfiles(posts: Collection<MattermostPost>): List<MattermostUser> {
@@ -352,6 +387,43 @@ class ChannelRepository(
 
     private suspend fun refreshLatestSafely() {
         runCatching { refreshLatest() }
+    }
+
+    private fun ensurePresence(userIds: Collection<String>) {
+        val missing = presenceStore.missingUserIds(userIds)
+        if (missing.isNotEmpty()) scope.launch { refreshPresence(missing) }
+    }
+
+    private suspend fun refreshAllPresence() {
+        if (!initialized) return
+        val userIds = feedMutex.withLock { feed.userIds() }.toMutableSet()
+        userIds += currentUser.id
+        refreshPresence(userIds)
+    }
+
+    private suspend fun refreshPresence(userIds: Collection<String>) {
+        val generation = presenceGeneration
+        val requested = synchronized(inFlightPresence) {
+            userIds.asSequence()
+                .filter(String::isNotBlank)
+                .distinct()
+                .filter { inFlightPresence.add(generation to it) }
+                .toList()
+        }
+        if (requested.isEmpty()) return
+        try {
+            val requestConfig = config
+            val startedAtRevision = presenceStore.beginSnapshot()
+            val statuses = runCatching { api.userStatuses(requestConfig, requested) }.getOrNull() ?: return
+            if (generation != presenceGeneration) return
+            if (presenceStore.applySnapshot(requested, statuses, startedAtRevision)) {
+                _userPresence.value = presenceStore.snapshot()
+            }
+        } finally {
+            synchronized(inFlightPresence) {
+                requested.forEach { inFlightPresence.remove(generation to it) }
+            }
+        }
     }
 
     private suspend fun emitAll(mutations: Collection<FeedMutation>) {
