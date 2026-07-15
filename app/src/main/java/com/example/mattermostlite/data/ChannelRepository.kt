@@ -6,11 +6,13 @@ import com.example.mattermostlite.model.DeliveryState
 import com.example.mattermostlite.model.FeedItem
 import com.example.mattermostlite.model.FeedMutation
 import com.example.mattermostlite.model.MattermostChannel
+import com.example.mattermostlite.model.MattermostFile
 import com.example.mattermostlite.model.MattermostPost
 import com.example.mattermostlite.model.MattermostUser
 import com.example.mattermostlite.model.ServerConfig
 import com.example.mattermostlite.model.SocketCursor
 import com.example.mattermostlite.model.SocketSignal
+import com.example.mattermostlite.model.UploadCapabilities
 import com.example.mattermostlite.network.MattermostApi
 import com.example.mattermostlite.network.MattermostSocket
 import kotlinx.coroutines.CompletableDeferred
@@ -31,6 +33,7 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.IOException
 import java.util.UUID
+import okhttp3.RequestBody
 import kotlin.math.min
 import kotlin.random.Random
 
@@ -47,10 +50,12 @@ class ChannelRepository(
     private val _mutations = MutableSharedFlow<FeedMutation>(extraBufferCapacity = 256)
     private val _connectionState = MutableStateFlow(ConnectionState.OFFLINE)
     private val _refreshing = MutableStateFlow(false)
+    private val _uploadCapabilities = MutableStateFlow(UploadCapabilities())
 
     val mutations: SharedFlow<FeedMutation> = _mutations.asSharedFlow()
     val connectionState: StateFlow<ConnectionState> = _connectionState.asStateFlow()
     val refreshing: StateFlow<Boolean> = _refreshing.asStateFlow()
+    val uploadCapabilities: StateFlow<UploadCapabilities> = _uploadCapabilities.asStateFlow()
 
     private lateinit var config: AuthenticatedServerConfig
     private lateinit var channel: MattermostChannel
@@ -69,10 +74,13 @@ class ChannelRepository(
         initialized = false
         socketCursor = null
         olderExhausted = false
+        _uploadCapabilities.value = UploadCapabilities()
         val (authenticatedConfig, authenticatedUser) = api.login(rawConfig)
         config = authenticatedConfig
         currentUser = authenticatedUser
         channel = api.resolveChannel(config)
+        _uploadCapabilities.value = runCatching { api.uploadCapabilities(config) }
+            .getOrDefault(UploadCapabilities())
         initialized = true
         if (foreground) startSocket()
         withTimeoutOrNull(3_000) { socketReady.await() }
@@ -157,15 +165,28 @@ class ChannelRepository(
         }
     }
 
-    suspend fun send(message: String): Boolean {
-        if (message.isBlank()) return false
+    suspend fun uploadFile(
+        fileName: String,
+        clientId: String,
+        body: RequestBody,
+    ): MattermostFile = api.uploadFile(config, channel.id, fileName, clientId, body)
+
+    suspend fun send(message: String, uploadedFiles: List<MattermostFile> = emptyList()): Boolean {
+        if (message.isBlank() && uploadedFiles.isEmpty()) return false
         val pendingId = UUID.randomUUID().toString()
         val mutation = feedMutex.withLock {
-            feed.addPending(pendingId, channel.id, currentUser, message, System.currentTimeMillis())
+            feed.addPending(
+                pendingId,
+                channel.id,
+                currentUser,
+                message,
+                System.currentTimeMillis(),
+                uploadedFiles,
+            )
         }
         _mutations.emit(mutation)
         scheduleUnconfirmed(pendingId)
-        return submitPending(pendingId, message)
+        return submitPending(pendingId, message, uploadedFiles.map(MattermostFile::id))
     }
 
     suspend fun edit(postId: String, message: String): Boolean {
@@ -190,19 +211,23 @@ class ChannelRepository(
         val pending = feedMutex.withLock {
             val item = feed.pending(pendingId) ?: return
             val mutation = feed.setPendingState(pendingId, DeliveryState.OPTIMISTIC) ?: return
-            mutation to item.message
+            Triple(mutation, item.message, item.fileIds)
         }
         _mutations.emit(pending.first)
         scheduleUnconfirmed(pendingId)
-        submitPending(pendingId, pending.second)
+        submitPending(pendingId, pending.second, pending.third)
     }
 
     fun close() {
         stopSocket()
     }
 
-    private suspend fun submitPending(pendingId: String, message: String): Boolean = try {
-        val post = api.createPost(config, channel.id, message, pendingId)
+    private suspend fun submitPending(
+        pendingId: String,
+        message: String,
+        fileIds: List<String>,
+    ): Boolean = try {
+        val post = api.createPost(config, channel.id, message, pendingId, fileIds)
         emitAll(feedMutex.withLock { feed.merge(listOf(post), listOf(currentUser)) })
         true
     } catch (error: Exception) {

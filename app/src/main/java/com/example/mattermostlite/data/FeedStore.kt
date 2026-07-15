@@ -7,6 +7,7 @@ import com.example.mattermostlite.model.FeedMutation
 import com.example.mattermostlite.model.FeedFile
 import com.example.mattermostlite.model.MattermostPost
 import com.example.mattermostlite.model.MattermostUser
+import com.example.mattermostlite.model.MattermostFile
 
 class FeedStore(
     private val unsupportedMessage: String,
@@ -112,6 +113,7 @@ class FeedStore(
         user: MattermostUser,
         message: String,
         createAt: Long,
+        uploadedFiles: List<MattermostFile> = emptyList(),
     ): FeedMutation {
         users[user.id] = user
         val item = FeedItem(
@@ -125,6 +127,9 @@ class FeedStore(
             createAt = createAt,
             updateAt = createAt,
             deliveryState = DeliveryState.OPTIMISTIC,
+            fileIds = uploadedFiles.map(MattermostFile::id),
+            images = imagesFrom(uploadedFiles),
+            files = filesFrom(uploadedFiles),
         )
         val index = items.binarySearch(item, FEED_ORDER).let { if (it >= 0) it else -it - 1 }
         items.add(index, item)
@@ -202,39 +207,12 @@ class FeedStore(
             previous?.images?.filter { it.fileId in post.fileIds }.orEmpty()
         } else if (post.files.isEmpty()) {
             emptyList()
-        } else {
-            post.files.mapNotNull {
-                if (it.id.isBlank() || !it.mimeType.startsWith("image/", ignoreCase = true)) {
-                    null
-                } else {
-                    FeedImage(
-                        fileId = it.id,
-                        name = it.name,
-                        width = it.width,
-                        height = it.height,
-                        hasPreviewImage = it.hasPreviewImage,
-                    )
-                }
-            }
-        }
+        } else imagesFrom(post.files)
         val files = if (preserveExistingMetadata) {
             previous?.files?.filter { it.fileId in post.fileIds }.orEmpty()
         } else if (post.files.isEmpty()) {
             emptyList()
-        } else {
-            post.files.mapNotNull {
-                if (it.id.isBlank() || it.mimeType.startsWith("image/", ignoreCase = true)) {
-                    null
-                } else {
-                    FeedFile(
-                        fileId = it.id,
-                        name = it.name.ifBlank { it.id },
-                        mimeType = it.mimeType.ifBlank { "application/octet-stream" },
-                        sizeBytes = it.sizeBytes,
-                    )
-                }
-            }
-        }
+        } else filesFrom(post.files)
         return FeedItem(
             key = previous?.key ?: post.pendingPostId.takeIf(String::isNotBlank)?.let(::pendingKey) ?: serverKey(post.id),
             serverId = post.id,
@@ -248,6 +226,7 @@ class FeedStore(
             createAt = post.createAt,
             updateAt = post.updateAt,
             deliveryState = DeliveryState.SENT,
+            fileIds = post.fileIds.ifEmpty { post.files.map(MattermostFile::id) },
             images = images,
             files = files,
             editAt = post.editAt,
@@ -256,6 +235,33 @@ class FeedStore(
 
     private fun serverKey(id: String) = "post:$id"
     private fun pendingKey(id: String) = "pending:$id"
+
+    private fun imagesFrom(files: List<MattermostFile>): List<FeedImage> = files.mapNotNull {
+        if (it.id.isBlank() || !it.mimeType.startsWith("image/", ignoreCase = true)) {
+            null
+        } else {
+            FeedImage(
+                fileId = it.id,
+                name = it.name,
+                width = it.width,
+                height = it.height,
+                hasPreviewImage = it.hasPreviewImage,
+            )
+        }
+    }
+
+    private fun filesFrom(files: List<MattermostFile>): List<FeedFile> = files.mapNotNull {
+        if (it.id.isBlank() || it.mimeType.startsWith("image/", ignoreCase = true)) {
+            null
+        } else {
+            FeedFile(
+                fileId = it.id,
+                name = it.name.ifBlank { it.id },
+                mimeType = it.mimeType.ifBlank { "application/octet-stream" },
+                sizeBytes = it.sizeBytes,
+            )
+        }
+    }
 
     private companion object {
         val POST_ORDER = compareBy<MattermostPost>({ it.createAt }, { it.id })

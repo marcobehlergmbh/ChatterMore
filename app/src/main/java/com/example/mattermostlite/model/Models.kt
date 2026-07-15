@@ -66,6 +66,11 @@ data class MattermostFile(
     val sizeBytes: Long = UNKNOWN_FILE_SIZE,
 )
 
+data class UploadCapabilities(
+    val enabled: Boolean = true,
+    val maxFileSizeBytes: Long? = null,
+)
+
 data class FeedImage(
     val fileId: String,
     val name: String,
@@ -119,6 +124,7 @@ data class FeedItem(
     val createAt: Long,
     val updateAt: Long,
     val deliveryState: DeliveryState,
+    val fileIds: List<String> = emptyList(),
     val images: List<FeedImage> = emptyList(),
     val files: List<FeedFile> = emptyList(),
     val editAt: Long = 0,

@@ -4,20 +4,34 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.example.mattermostlite.data.ChannelRepository
+import com.example.mattermostlite.data.AttachmentSelection
+import com.example.mattermostlite.data.AttachmentStatus
+import com.example.mattermostlite.data.DraftAttachment
 import com.example.mattermostlite.model.ConnectionState
 import com.example.mattermostlite.model.ChannelNotFoundException
 import com.example.mattermostlite.model.DeliveryState
 import com.example.mattermostlite.model.FeedItem
 import com.example.mattermostlite.model.FeedMutation
 import com.example.mattermostlite.model.MattermostException
+import com.example.mattermostlite.model.MattermostFile
 import com.example.mattermostlite.model.ServerConfig
 import com.example.mattermostlite.model.TeamNotFoundException
+import com.example.mattermostlite.model.UploadCapabilities
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
+import java.io.FileNotFoundException
 import java.io.IOException
 
 sealed interface ScreenState {
@@ -42,6 +56,18 @@ data class MessageEditState(
     val failed: Boolean = false,
 )
 
+data class ComposerState(
+    val attachments: List<DraftAttachment> = emptyList(),
+    val capabilities: UploadCapabilities = UploadCapabilities(),
+    val resolvingCount: Int = 0,
+) {
+    val readyFiles: List<MattermostFile>
+        get() = attachments.mapNotNull { (it.status as? AttachmentStatus.Ready)?.file }
+
+    val hasBlockingAttachments: Boolean
+        get() = resolvingCount > 0 || attachments.any { it.status !is AttachmentStatus.Ready }
+}
+
 class MainViewModel(
     private val container: AppContainer,
     unsupportedMessage: String,
@@ -54,17 +80,29 @@ class MainViewModel(
     )
     private val _screen = MutableStateFlow<ScreenState>(ScreenState.Loading)
     private val _messageEdit = MutableStateFlow<MessageEditState?>(null)
+    private val _composer = MutableStateFlow(ComposerState())
+    private val _composerMessages = MutableSharedFlow<String>(extraBufferCapacity = 8)
+    private val uploadJobs = mutableMapOf<String, Job>()
+    private val uploadSemaphore = Semaphore(MAX_CONCURRENT_UPLOADS)
+    private var attachmentGeneration = 0
     private var benchmarkItems: List<FeedItem>? = null
     private var currentUserId: String? = null
     private var loadingOlder = false
 
     val screen: StateFlow<ScreenState> = _screen.asStateFlow()
     val messageEdit: StateFlow<MessageEditState?> = _messageEdit.asStateFlow()
+    val composer: StateFlow<ComposerState> = _composer.asStateFlow()
+    val composerMessages: SharedFlow<String> = _composerMessages.asSharedFlow()
     val mutations: SharedFlow<FeedMutation> = repository.mutations
     val connectionState: StateFlow<ConnectionState> = repository.connectionState
     val refreshing: StateFlow<Boolean> = repository.refreshing
 
     init {
+        viewModelScope.launch {
+            repository.uploadCapabilities.collect { capabilities ->
+                _composer.update { it.copy(capabilities = capabilities) }
+            }
+        }
         if (BuildConfig.BENCHMARK_FIXTURES) {
             _screen.value = ScreenState.Setup()
         } else {
@@ -79,6 +117,7 @@ class MainViewModel(
 
     fun connect(config: ServerConfig, persist: Boolean = true) {
         if ((_screen.value as? ScreenState.Setup)?.connecting == true) return
+        clearAttachments()
         _messageEdit.value = null
         _screen.value = ScreenState.Setup(config = config, connecting = true)
         viewModelScope.launch {
@@ -107,6 +146,7 @@ class MainViewModel(
     }
 
     fun clearConnection() {
+        clearAttachments()
         repository.close()
         currentUserId = null
         _messageEdit.value = null
@@ -162,9 +202,80 @@ class MainViewModel(
         viewModelScope.launch { runCatching { repository.refreshLatest() } }
     }
 
+    fun addAttachments(selections: List<AttachmentSelection>): Boolean {
+        if (
+            selections.isEmpty() ||
+            screen.value !is ScreenState.Channel ||
+            _messageEdit.value != null
+        ) {
+            selections.forEach(container.attachmentDataSource::discard)
+            return false
+        }
+        if (!_composer.value.capabilities.enabled) {
+            selections.forEach(container.attachmentDataSource::discard)
+            _composerMessages.tryEmit("File uploads are disabled on this Mattermost server.")
+            return false
+        }
+        val available = MAX_ATTACHMENTS -
+            _composer.value.attachments.size -
+            _composer.value.resolvingCount
+        if (available <= 0) {
+            selections.forEach(container.attachmentDataSource::discard)
+            _composerMessages.tryEmit("A message can contain up to $MAX_ATTACHMENTS attachments.")
+            return false
+        }
+        if (selections.size > available) {
+            selections.drop(available).forEach(container.attachmentDataSource::discard)
+            _composerMessages.tryEmit("Only the first $available selected files were added.")
+        }
+        val accepted = selections.take(available)
+        _composer.update { it.copy(resolvingCount = it.resolvingCount + accepted.size) }
+        val generation = attachmentGeneration
+        viewModelScope.launch {
+            accepted.forEach { selection ->
+                try {
+                    inspectAndUpload(selection, generation)
+                } finally {
+                    if (generation == attachmentGeneration) {
+                        _composer.update {
+                            it.copy(resolvingCount = (it.resolvingCount - 1).coerceAtLeast(0))
+                        }
+                    }
+                }
+            }
+        }
+        return true
+    }
+
+    fun removeAttachment(localId: String) {
+        uploadJobs.remove(localId)?.cancel()
+        val removed = _composer.value.attachments.firstOrNull { it.localId == localId } ?: return
+        _composer.update { state ->
+            state.copy(attachments = state.attachments.filterNot { it.localId == localId })
+        }
+        container.attachmentDataSource.release(removed.source)
+    }
+
+    fun retryAttachment(localId: String) {
+        val attachment = _composer.value.attachments.firstOrNull { it.localId == localId } ?: return
+        if (attachment.status !is AttachmentStatus.Failed) return
+        updateAttachment(localId) { it.copy(status = AttachmentStatus.Queued) }
+        uploadAttachment(localId)
+    }
+
     fun send(message: String): Boolean {
-        if (message.isBlank() || screen.value !is ScreenState.Channel) return false
-        viewModelScope.launch(start = CoroutineStart.UNDISPATCHED) { repository.send(message) }
+        val composer = _composer.value
+        if (
+            screen.value !is ScreenState.Channel ||
+            composer.hasBlockingAttachments ||
+            (message.isBlank() && composer.readyFiles.isEmpty())
+        ) {
+            return false
+        }
+        val files = composer.readyFiles
+        composer.attachments.forEach { container.attachmentDataSource.release(it.source) }
+        _composer.value = composer.copy(attachments = emptyList())
+        viewModelScope.launch(start = CoroutineStart.UNDISPATCHED) { repository.send(message, files) }
         return true
     }
 
@@ -173,7 +284,9 @@ class MainViewModel(
         if (
             item.deliveryState != DeliveryState.SENT ||
             item.userId != currentUserId ||
-            _messageEdit.value?.submitting == true
+            _messageEdit.value?.submitting == true ||
+            _composer.value.attachments.isNotEmpty() ||
+            _composer.value.resolvingCount > 0
         ) {
             return false
         }
@@ -225,7 +338,106 @@ class MainViewModel(
     }
 
     override fun onCleared() {
+        clearAttachments()
         repository.close()
+    }
+
+    private fun uploadAttachment(localId: String) {
+        uploadJobs.remove(localId)?.cancel()
+        val job = viewModelScope.launch {
+            try {
+                uploadSemaphore.withPermit {
+                    val source = _composer.value.attachments
+                        .firstOrNull { it.localId == localId }
+                        ?.source
+                        ?: return@withPermit
+                    updateAttachment(localId) {
+                        it.copy(status = AttachmentStatus.Uploading(0L, source.sizeBytes))
+                    }
+                    var lastProgressAt = 0L
+                    val body = container.attachmentDataSource.requestBody(source) { sent, total ->
+                        val now = System.nanoTime()
+                        if (sent == total || now - lastProgressAt >= PROGRESS_INTERVAL_NANOS) {
+                            lastProgressAt = now
+                            updateAttachment(localId) {
+                                it.copy(status = AttachmentStatus.Uploading(sent, total))
+                            }
+                        }
+                    }
+                    val file = repository.uploadFile(source.name, localId, body)
+                    updateAttachment(localId) { it.copy(status = AttachmentStatus.Ready(file)) }
+                }
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                updateAttachment(localId) {
+                    it.copy(status = AttachmentStatus.Failed(attachmentMessage(error)))
+                }
+            } finally {
+                uploadJobs.remove(localId, coroutineContext[Job])
+            }
+        }
+        uploadJobs[localId] = job
+    }
+
+    private fun updateAttachment(localId: String, transform: (DraftAttachment) -> DraftAttachment) {
+        _composer.update { state ->
+            state.copy(
+                attachments = state.attachments.map {
+                    if (it.localId == localId) transform(it) else it
+                },
+            )
+        }
+    }
+
+    private suspend fun inspectAndUpload(selection: AttachmentSelection, generation: Int) {
+        val source = try {
+            container.attachmentDataSource.inspect(selection)
+        } catch (error: Exception) {
+            container.attachmentDataSource.discard(selection)
+            _composerMessages.emit(error.message ?: "The selected file could not be opened.")
+            return
+        }
+        if (generation != attachmentGeneration || _screen.value !is ScreenState.Channel) {
+            container.attachmentDataSource.release(source)
+            return
+        }
+        if (_composer.value.attachments.any { it.source.uri == source.uri }) {
+            if (source.temporary) container.attachmentDataSource.release(source)
+            _composerMessages.emit("${source.name} is already attached.")
+            return
+        }
+        val limit = _composer.value.capabilities.maxFileSizeBytes
+        if (limit != null && source.sizeBytes != null && source.sizeBytes > limit) {
+            container.attachmentDataSource.release(source)
+            _composerMessages.emit(
+                "${source.name} is too large. This server allows up to ${formatBytes(limit)}.",
+            )
+            return
+        }
+        val attachment = DraftAttachment(source = source)
+        _composer.update { it.copy(attachments = it.attachments + attachment) }
+        uploadAttachment(attachment.localId)
+    }
+
+    private fun clearAttachments() {
+        attachmentGeneration++
+        uploadJobs.values.forEach(Job::cancel)
+        uploadJobs.clear()
+        _composer.value.attachments.forEach { container.attachmentDataSource.release(it.source) }
+        _composer.update { it.copy(attachments = emptyList(), resolvingCount = 0) }
+    }
+
+    private fun attachmentMessage(error: Throwable): String = when (error) {
+        is MattermostException -> when (error.statusCode) {
+            403 -> "This account is not allowed to upload files."
+            413 -> "The server rejected this file because it is too large."
+            501 -> "File storage is unavailable on this server."
+            else -> error.message
+        }
+        is FileNotFoundException -> "The selected file is no longer available."
+        is IOException -> "Upload failed. Check the connection and try again."
+        else -> error.message ?: "Upload failed. Try again."
     }
 
     private fun userMessage(error: Throwable): String = when (error) {
@@ -250,5 +462,16 @@ class MainViewModel(
         @Suppress("UNCHECKED_CAST")
         override fun <T : ViewModel> create(modelClass: Class<T>): T =
             MainViewModel(container, unsupportedMessage) as T
+    }
+
+    private companion object {
+        const val MAX_ATTACHMENTS = 10
+        const val MAX_CONCURRENT_UPLOADS = 2
+        const val PROGRESS_INTERVAL_NANOS = 100_000_000L
+
+        fun formatBytes(bytes: Long): String {
+            val mib = bytes / (1024.0 * 1024.0)
+            return if (mib >= 10.0) "${mib.toInt()} MB" else "%.1f MB".format(mib)
+        }
     }
 }

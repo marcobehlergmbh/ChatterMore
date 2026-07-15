@@ -4,6 +4,8 @@ import com.example.mattermostlite.model.SocketSignal
 import kotlinx.serialization.json.jsonObject
 import okhttp3.OkHttpClient
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -120,6 +122,41 @@ class MattermostJsonTest {
         assertEquals("c", json.string("channel_id"))
         assertEquals("hello", json.string("message"))
         assertEquals("pending", json.string("pending_post_id"))
+    }
+
+    @Test
+    fun `creates attachment-only post body with uploaded file ids`() {
+        val json = mattermostJson.parseToJsonElement(
+            createPostBody("c", "", "pending", listOf("file-1", "file-2")),
+        ).jsonObject
+
+        assertEquals("", json.string("message"))
+        assertEquals(listOf("file-1", "file-2"), json.stringList("file_ids"))
+    }
+
+    @Test
+    fun `parses upload response and client upload limits`() {
+        val files = parseUploadedFiles(
+            """{"file_infos":[{"id":"file-1","name":"photo.jpg","mime_type":"image/jpeg","size":42}]}""",
+        )
+        val capabilities = parseUploadCapabilities(
+            """{"EnableFileAttachments":"true","EnableMobileFileUpload":"true","MaxFileSize":"104857600"}""",
+        )
+
+        assertEquals("file-1", files.single().id)
+        assertEquals(42L, files.single().sizeBytes)
+        assertTrue(capabilities.enabled)
+        assertEquals(104_857_600L, capabilities.maxFileSizeBytes)
+    }
+
+    @Test
+    fun `disabled server attachment setting disables uploads`() {
+        val capabilities = parseUploadCapabilities(
+            """{"EnableFileAttachments":"false","EnableMobileFileUpload":"true"}""",
+        )
+
+        assertFalse(capabilities.enabled)
+        assertNull(capabilities.maxFileSizeBytes)
     }
 
     @Test

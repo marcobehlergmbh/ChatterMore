@@ -22,9 +22,13 @@ import android.widget.ProgressBar
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.OnBackPressedCallback
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.annotation.OptIn
 import androidx.core.content.ContextCompat
+import androidx.core.content.FileProvider
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
@@ -51,7 +55,9 @@ import com.example.mattermostlite.model.FeedImage
 import com.example.mattermostlite.model.FeedFile
 import com.example.mattermostlite.model.FeedItem
 import com.example.mattermostlite.model.ServerConfig
+import com.example.mattermostlite.data.AttachmentSelection
 import com.example.mattermostlite.network.MattermostImageLoader
+import com.example.mattermostlite.ui.DraftAttachmentAdapter
 import com.example.mattermostlite.ui.FeedAdapter
 import com.example.mattermostlite.ui.HistoryPrefetchPolicy
 import com.example.mattermostlite.ui.DownloadFileName
@@ -64,6 +70,7 @@ import com.example.mattermostlite.ui.VideoPlaybackErrorDetails
 import com.example.mattermostlite.ui.VideoPlaybackErrorKind
 import com.example.mattermostlite.ui.VideoPlaybackRestore
 import kotlinx.coroutines.launch
+import java.io.File
 
 private data class EditFocusAnchor(
     val scrollAnchor: MessageScrollAnchor,
@@ -97,16 +104,42 @@ class MainActivity : ComponentActivity() {
     private lateinit var editModeLabel: TextView
     private lateinit var cancelEditButton: ImageButton
     private lateinit var messageInput: EditText
+    private lateinit var attachmentButton: ImageButton
     private lateinit var sendButton: ImageButton
+    private lateinit var attachmentActions: View
+    private lateinit var draftAttachmentList: RecyclerView
     private lateinit var latestProgress: ProgressBar
     private lateinit var newMessagesButton: Button
     private lateinit var layoutManager: LinearLayoutManager
     private lateinit var adapter: FeedAdapter
+    private lateinit var draftAttachmentAdapter: DraftAttachmentAdapter
     private var fullscreenImageDialog: Dialog? = null
     private var fullscreenVideoDialog: Dialog? = null
     private var activeVideoFile: FeedFile? = null
     private var activeVideoPlayer: ExoPlayer? = null
     private var pendingVideoRestore: VideoPlaybackRestore? = null
+    private var pendingCapture: AttachmentSelection? = null
+    private val attachmentBackCallback = object : OnBackPressedCallback(false) {
+        override fun handleOnBackPressed() {
+            setAttachmentActionsVisible(false)
+        }
+    }
+    private val galleryLauncher = registerForActivityResult(
+        ActivityResultContracts.PickMultipleVisualMedia(MAX_ATTACHMENTS),
+    ) { uris ->
+        viewModel.addAttachments(uris.map(::AttachmentSelection))
+    }
+    private val fileLauncher = registerForActivityResult(
+        ActivityResultContracts.OpenMultipleDocuments(),
+    ) { uris ->
+        viewModel.addAttachments(uris.map(::AttachmentSelection))
+    }
+    private val photoCaptureLauncher = registerForActivityResult(
+        ActivityResultContracts.TakePicture(),
+    ) { saved -> completeCapture(saved) }
+    private val videoCaptureLauncher = registerForActivityResult(
+        ActivityResultContracts.CaptureVideo(),
+    ) { saved -> completeCapture(saved) }
     private val imageLoader: MattermostImageLoader by lazy {
         (application as MattermostLiteApplication).container.imageLoader
     }
@@ -130,11 +163,17 @@ class MainActivity : ComponentActivity() {
         WindowCompat.setDecorFitsSystemWindows(window, false)
         setContentView(R.layout.activity_main)
         bindViews()
+        onBackPressedDispatcher.addCallback(this, attachmentBackCallback)
         configureInsets()
+        configureAttachmentComposer()
         configureActions()
         configureFeed()
         pendingScrollAnchor = savedInstanceState?.scrollAnchor()
         pendingVideoRestore = savedInstanceState?.videoPlaybackRestore()
+        pendingCapture = savedInstanceState
+            ?.getString(STATE_CAPTURE_URI)
+            ?.let(Uri::parse)
+            ?.let { AttachmentSelection(it, temporary = true) }
         if (BuildConfig.BENCHMARK_FIXTURES) {
             viewModel.enableBenchmarkFixture(intent.getIntExtra(EXTRA_BENCHMARK_MESSAGE_COUNT, 2_000))
         }
@@ -169,6 +208,7 @@ class MainActivity : ComponentActivity() {
             outState.putInt(STATE_SCROLL_OFFSET, anchor.topOffset)
         }
         captureVideoPlayback()?.writeTo(outState)
+        pendingCapture?.uri?.toString()?.let { outState.putString(STATE_CAPTURE_URI, it) }
         super.onSaveInstanceState(outState)
     }
 
@@ -200,7 +240,10 @@ class MainActivity : ComponentActivity() {
         editModeLabel = findViewById(R.id.editModeLabel)
         cancelEditButton = findViewById(R.id.cancelEditButton)
         messageInput = findViewById(R.id.messageInput)
+        attachmentButton = findViewById(R.id.attachmentButton)
         sendButton = findViewById(R.id.sendButton)
+        attachmentActions = findViewById(R.id.attachmentActions)
+        draftAttachmentList = findViewById(R.id.draftAttachmentList)
         latestProgress = findViewById(R.id.latestProgress)
         newMessagesButton = findViewById(R.id.newMessagesButton)
     }
@@ -254,6 +297,7 @@ class MainActivity : ComponentActivity() {
         }
         messageInput.doAfterTextChanged {
             viewModel.updateEditDraft(it?.toString().orEmpty())
+            updateComposerButtons()
         }
         cancelEditButton.setOnClickListener { viewModel.cancelEdit() }
         findViewById<ImageButton>(R.id.settingsButton).setOnClickListener {
@@ -271,6 +315,107 @@ class MainActivity : ComponentActivity() {
         newMessagesButton.setOnClickListener {
             scrollToBottom(smooth = false)
             newMessagesButton.isVisible = false
+        }
+    }
+
+    private fun configureAttachmentComposer() {
+        draftAttachmentAdapter = DraftAttachmentAdapter(
+            context = this,
+            scope = lifecycleScope,
+            onRetry = viewModel::retryAttachment,
+            onRemove = viewModel::removeAttachment,
+        )
+        draftAttachmentList.layoutManager = LinearLayoutManager(
+            this,
+            LinearLayoutManager.HORIZONTAL,
+            false,
+        )
+        draftAttachmentList.adapter = draftAttachmentAdapter
+        draftAttachmentList.itemAnimator = null
+
+        attachmentButton.setOnClickListener {
+            setAttachmentActionsVisible(!attachmentActions.isVisible)
+        }
+        findViewById<View>(R.id.galleryAction).setOnClickListener {
+            setAttachmentActionsVisible(false)
+            galleryLauncher.launch(
+                PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo),
+            )
+        }
+        findViewById<View>(R.id.fileAction).setOnClickListener {
+            setAttachmentActionsVisible(false)
+            fileLauncher.launch(arrayOf("*/*"))
+        }
+        findViewById<View>(R.id.cameraAction).setOnClickListener {
+            setAttachmentActionsVisible(false)
+            AlertDialog.Builder(this)
+                .setItems(arrayOf(getString(R.string.take_photo), getString(R.string.record_video))) { _, which ->
+                    launchCapture(video = which == 1)
+                }
+                .show()
+        }
+    }
+
+    private fun setAttachmentActionsVisible(visible: Boolean) {
+        if (visible == attachmentActions.isVisible) return
+        attachmentActions.animate().cancel()
+        attachmentBackCallback.isEnabled = visible
+        if (visible) {
+            attachmentActions.alpha = 0f
+            attachmentActions.translationY = attachmentActions.resources.displayMetrics.density * 20f
+            attachmentActions.isVisible = true
+            attachmentActions.animate()
+                .alpha(1f)
+                .translationY(0f)
+                .setDuration(ATTACHMENT_ANIMATION_MS)
+                .start()
+        } else {
+            attachmentActions.animate()
+                .alpha(0f)
+                .translationY(attachmentActions.resources.displayMetrics.density * 20f)
+                .setDuration(ATTACHMENT_ANIMATION_MS)
+                .withEndAction {
+                    attachmentActions.isVisible = false
+                    attachmentActions.alpha = 1f
+                    attachmentActions.translationY = 0f
+                }
+                .start()
+        }
+    }
+
+    private fun launchCapture(video: Boolean) {
+        val file = runCatching {
+            val captureDirectory = File(cacheDir, "captures").apply { mkdirs() }
+            File.createTempFile(
+                if (video) "video-" else "photo-",
+                if (video) ".mp4" else ".jpg",
+                captureDirectory,
+            )
+        }.getOrElse {
+            Toast.makeText(this, R.string.camera_unavailable, Toast.LENGTH_SHORT).show()
+            return
+        }
+        val selection = AttachmentSelection(
+            uri = FileProvider.getUriForFile(this, "$packageName.fileprovider", file),
+            temporary = true,
+        )
+        pendingCapture = selection
+        try {
+            if (video) videoCaptureLauncher.launch(selection.uri) else photoCaptureLauncher.launch(selection.uri)
+        } catch (_: ActivityNotFoundException) {
+            pendingCapture = null
+            file.delete()
+            Toast.makeText(this, R.string.camera_unavailable, Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private fun completeCapture(saved: Boolean) {
+        val selection = pendingCapture ?: return
+        pendingCapture = null
+        if (saved) {
+            viewModel.addAttachments(listOf(selection))
+        } else {
+            runCatching { contentResolver.delete(selection.uri, null, null) }
         }
     }
 
@@ -364,6 +509,12 @@ class MainActivity : ComponentActivity() {
                 launch { viewModel.connectionState.collect(::renderConnection) }
                 launch { viewModel.refreshing.collect { latestProgress.isVisible = it } }
                 launch { viewModel.messageEdit.collect(::renderMessageEdit) }
+                launch { viewModel.composer.collect(::renderComposer) }
+                launch {
+                    viewModel.composerMessages.collect {
+                        Toast.makeText(this@MainActivity, it, Toast.LENGTH_LONG).show()
+                    }
+                }
             }
         }
     }
@@ -399,6 +550,8 @@ class MainActivity : ComponentActivity() {
         editModeHeader.isVisible = state != null
 
         if (state != null) {
+            setAttachmentActionsVisible(false)
+            attachmentButton.isVisible = false
             if (previousPostId != state.postId) {
                 messageInput.setText(state.draftMessage)
                 scheduleEditFocusRelease()
@@ -425,9 +578,10 @@ class MainActivity : ComponentActivity() {
                 scheduleEditFocusRelease()
             }
         } else {
+            attachmentButton.isVisible = true
             if (previousPostId != null) messageInput.text.clear()
             messageInput.isEnabled = true
-            sendButton.isEnabled = true
+            updateComposerButtons()
             cancelEditButton.isEnabled = true
             if (previousPostId != null && anchoringEditSubmission && editFocusAnchor != null) {
                 anchoringEditSubmission = false
@@ -441,6 +595,24 @@ class MainActivity : ComponentActivity() {
             }
         }
         renderedEditingPostId = state?.postId
+    }
+
+    private fun renderComposer(state: ComposerState) {
+        draftAttachmentAdapter.submit(state.attachments)
+        draftAttachmentList.isVisible = state.attachments.isNotEmpty()
+        attachmentButton.isEnabled = state.capabilities.enabled && viewModel.messageEdit.value == null
+        updateComposerButtons()
+    }
+
+    private fun updateComposerButtons() {
+        val edit = viewModel.messageEdit.value
+        if (edit != null) {
+            sendButton.isEnabled = !edit.submitting
+            return
+        }
+        val state = viewModel.composer.value
+        sendButton.isEnabled = !state.hasBlockingAttachments &&
+            (messageInput.text.isNotBlank() || state.readyFiles.isNotEmpty())
     }
 
     private fun renderScreen(state: ScreenState) {
@@ -921,5 +1093,8 @@ class MainActivity : ComponentActivity() {
         const val STATE_VIDEO_SIZE_BYTES = "video_size_bytes"
         const val STATE_VIDEO_POSITION_MS = "video_position_ms"
         const val STATE_VIDEO_PLAY_WHEN_READY = "video_play_when_ready"
+        const val STATE_CAPTURE_URI = "capture_uri"
+        const val MAX_ATTACHMENTS = 10
+        const val ATTACHMENT_ANIMATION_MS = 180L
     }
 }

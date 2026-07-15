@@ -11,6 +11,8 @@ A deliberately small, foreground-only Android client for one Mattermost channel.
 - Inserts outgoing messages optimistically and reconciles REST/WebSocket acknowledgements with `pending_post_id`.
 - Keeps optimistic messages visually normal for 500 ms, then underlines them until confirmed.
 - Retries failed sends without losing the message text.
+- Uploads gallery media, camera captures, and files with progress before sending them with optional text.
+- Validates known attachment sizes against the Mattermost server limit before upload.
 - Renders authenticated image attachments from bounded server-generated previews.
 - Renders cached user avatars and lightweight YouTube thumbnail previews.
 - Persists downloaded image bytes in a bounded app-private cache across launches.

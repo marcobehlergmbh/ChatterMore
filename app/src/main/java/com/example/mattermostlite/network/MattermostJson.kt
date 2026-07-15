@@ -7,6 +7,7 @@ import com.example.mattermostlite.model.MattermostTeam
 import com.example.mattermostlite.model.MattermostUser
 import com.example.mattermostlite.model.PostPage
 import com.example.mattermostlite.model.UNKNOWN_FILE_SIZE
+import com.example.mattermostlite.model.UploadCapabilities
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -19,6 +20,7 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.put
+import kotlinx.serialization.json.putJsonArray
 
 internal val mattermostJson = Json {
     ignoreUnknownKeys = true
@@ -94,6 +96,35 @@ internal fun parseFiles(json: String): List<MattermostFile> =
         it.objectOrNull()?.let(::parseFile)
     }
 
+internal fun parseUploadedFiles(json: String): List<MattermostFile> =
+    mattermostJson.parseToJsonElement(json).jsonObject["file_infos"]
+        ?.arrayOrNull()
+        ?.mapNotNull { it.objectOrNull()?.let(::parseFile) }
+        .orEmpty()
+
+internal fun parseUploadCapabilities(json: String): UploadCapabilities {
+    val value = mattermostJson.parseToJsonElement(json).jsonObject
+    val attachmentsEnabled = value["EnableFileAttachments"]
+        ?.jsonPrimitive
+        ?.contentOrNull
+        ?.toBooleanStrictOrNull()
+        ?: true
+    val mobileUploadEnabled = value["EnableMobileFileUpload"]
+        ?.jsonPrimitive
+        ?.contentOrNull
+        ?.toBooleanStrictOrNull()
+        ?: true
+    val maxFileSize = value["MaxFileSize"]
+        ?.jsonPrimitive
+        ?.contentOrNull
+        ?.toLongOrNull()
+        ?.takeIf { it > 0L }
+    return UploadCapabilities(
+        enabled = attachmentsEnabled && mobileUploadEnabled,
+        maxFileSizeBytes = maxFileSize,
+    )
+}
+
 internal fun parseFile(value: JsonObject): MattermostFile = MattermostFile(
     id = value.string("id"),
     name = value.string("name"),
@@ -119,10 +150,14 @@ internal fun createPostBody(
     channelId: String,
     message: String,
     pendingPostId: String,
+    fileIds: List<String> = emptyList(),
 ): String = buildJsonObject {
     put("channel_id", channelId)
     put("message", message)
     put("pending_post_id", pendingPostId)
+    if (fileIds.isNotEmpty()) {
+        putJsonArray("file_ids") { fileIds.forEach { add(JsonPrimitive(it)) } }
+    }
 }.toString()
 
 internal fun patchPostBody(message: String): String = buildJsonObject {

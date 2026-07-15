@@ -8,11 +8,13 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Protocol
 import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
 import okhttp3.ResponseBody.Companion.toResponseBody
 import okio.Buffer
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class MattermostApiTest {
@@ -112,6 +114,58 @@ class MattermostApiTest {
             "updated",
             captured?.body?.let { mattermostJson.parseToJsonElement(it).jsonObject.string("message") },
         )
+    }
+
+    @Test
+    fun `loads upload capabilities and uploads multipart file`() = runBlocking {
+        val requests = mutableListOf<CapturedRequest>()
+        val client = OkHttpClient.Builder()
+            .addInterceptor { chain ->
+                val request = chain.request()
+                requests += request.capture()
+                val body = when (request.url.encodedPath) {
+                    "/api/v4/config/client" ->
+                        """{"EnableFileAttachments":"true","EnableMobileFileUpload":"true","MaxFileSize":"1024"}"""
+                    "/api/v4/files" ->
+                        """{"file_infos":[{"id":"file-1","name":"note.txt","mime_type":"text/plain","size":5}],"client_ids":["local-1"]}"""
+                    else -> error("Unexpected request: ${request.url}")
+                }
+                Response.Builder()
+                    .request(request)
+                    .protocol(Protocol.HTTP_1_1)
+                    .code(if (request.url.encodedPath.endsWith("files")) 201 else 200)
+                    .message("OK")
+                    .body(body.toResponseBody(JSON_MEDIA_TYPE))
+                    .build()
+            }
+            .build()
+        val api = MattermostApi(client)
+        val session = AuthenticatedServerConfig(
+            baseUrl = "https://mattermost.example.com",
+            teamName = "engineering",
+            channelName = "town-square",
+            token = "session-token",
+        )
+
+        val capabilities = api.uploadCapabilities(session)
+        val uploaded = api.uploadFile(
+            session,
+            channelId = "channel-1",
+            fileName = "note.txt",
+            clientId = "local-1",
+            body = "hello".toRequestBody("text/plain".toMediaType()),
+        )
+
+        assertEquals(1024L, capabilities.maxFileSizeBytes)
+        assertEquals("file-1", uploaded.id)
+        val upload = requests.last()
+        assertEquals("/api/v4/files", upload.path)
+        assertEquals("POST", upload.method)
+        assertEquals("Bearer session-token", upload.authorization)
+        assertTrue(upload.body.contains("name=\"channel_id\""))
+        assertTrue(upload.body.contains("channel-1"))
+        assertTrue(upload.body.contains("filename=\"note.txt\""))
+        assertTrue(upload.body.contains("hello"))
     }
 
     private fun Request.capture(): CapturedRequest {

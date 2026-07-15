@@ -11,13 +11,16 @@ import com.example.mattermostlite.model.MattermostUser
 import com.example.mattermostlite.model.PostPage
 import com.example.mattermostlite.model.ServerConfig
 import com.example.mattermostlite.model.TeamNotFoundException
+import com.example.mattermostlite.model.UploadCapabilities
 import kotlinx.coroutines.suspendCancellableCoroutine
 import okhttp3.Call
 import okhttp3.Callback
 import okhttp3.HttpUrl
 import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.MultipartBody
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.RequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
@@ -27,6 +30,7 @@ import kotlin.coroutines.resumeWithException
 
 class MattermostApi(
     private val client: OkHttpClient,
+    private val uploadClient: OkHttpClient = client,
 ) {
     suspend fun login(config: ServerConfig): Pair<AuthenticatedServerConfig, MattermostUser> {
         val normalized = normalizedConfig(config)
@@ -141,13 +145,44 @@ class MattermostApi(
             execute(request(config, apiUrl(config, "posts", postId, "files", "info"))),
         )
 
+    suspend fun uploadCapabilities(config: AuthenticatedServerConfig): UploadCapabilities =
+        parseUploadCapabilities(
+            execute(request(config, apiUrl(config, "config", "client"))),
+        )
+
+    suspend fun uploadFile(
+        config: AuthenticatedServerConfig,
+        channelId: String,
+        fileName: String,
+        clientId: String,
+        body: RequestBody,
+    ): MattermostFile {
+        val multipart = MultipartBody.Builder()
+            .setType(MultipartBody.FORM)
+            .addFormDataPart("channel_id", channelId)
+            .addFormDataPart("client_ids", clientId)
+            .addFormDataPart("files", fileName, body)
+            .build()
+        val files = parseUploadedFiles(
+            execute(
+                request(config, apiUrl(config, "files")).newBuilder()
+                    .post(multipart)
+                    .build(),
+                uploadClient,
+            ),
+        )
+        return files.singleOrNull()
+            ?: throw MattermostException(500, "The server did not return the uploaded file metadata.")
+    }
+
     suspend fun createPost(
         config: AuthenticatedServerConfig,
         channelId: String,
         message: String,
         pendingPostId: String,
+        fileIds: List<String> = emptyList(),
     ): MattermostPost {
-        val body = createPostBody(channelId, message, pendingPostId).toRequestBody(JSON_MEDIA_TYPE)
+        val body = createPostBody(channelId, message, pendingPostId, fileIds).toRequestBody(JSON_MEDIA_TYPE)
         return parsePost(
             execute(
                 request(config, apiUrl(config, "posts")).newBuilder()
@@ -207,10 +242,14 @@ class MattermostApi(
         .header("Accept", "application/json")
         .build()
 
-    private suspend fun execute(request: Request): String = executeResponse(request).body
+    private suspend fun execute(request: Request, callClient: OkHttpClient = client): String =
+        executeResponse(request, callClient).body
 
-    private suspend fun executeResponse(request: Request): ApiResponse = suspendCancellableCoroutine { continuation ->
-        val call = client.newCall(request)
+    private suspend fun executeResponse(
+        request: Request,
+        callClient: OkHttpClient = client,
+    ): ApiResponse = suspendCancellableCoroutine { continuation ->
+        val call = callClient.newCall(request)
         continuation.invokeOnCancellation { call.cancel() }
         call.enqueue(object : Callback {
             override fun onFailure(call: Call, e: IOException) {

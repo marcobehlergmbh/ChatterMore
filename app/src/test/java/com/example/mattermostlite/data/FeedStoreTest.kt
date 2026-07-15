@@ -71,6 +71,40 @@ class FeedStoreTest {
     }
 
     @Test
+    fun `attachment-only pending post preserves upload ids for retry and acknowledgement`() {
+        val store = FeedStore("Unsupported")
+        val uploaded = MattermostFile(
+            id = "photo",
+            name = "photo.jpg",
+            mimeType = "image/jpeg",
+            width = 1200,
+            height = 800,
+            hasPreviewImage = true,
+        )
+        store.addPending("client-1", "channel", user, "", 100, listOf(uploaded))
+
+        val pending = store.pending("client-1")!!
+        assertEquals(listOf("photo"), pending.fileIds)
+        assertEquals(listOf("photo"), pending.images.map { it.fileId })
+        assertEquals("", pending.message)
+
+        store.merge(
+            listOf(
+                post("server-1", 100, pendingId = "client-1").copy(
+                    message = "",
+                    fileIds = listOf("photo"),
+                ),
+            ),
+            listOf(user),
+        )
+
+        val acknowledged = store.snapshot().single()
+        assertEquals("server-1", acknowledged.serverId)
+        assertEquals(listOf("photo"), acknowledged.fileIds)
+        assertEquals(listOf("photo"), acknowledged.images.map { it.fileId })
+    }
+
+    @Test
     fun `optimistic post becomes underlined state until acknowledged`() {
         val store = FeedStore("Unsupported")
         store.addPending("client-1", "channel", user, "hello", 100)
