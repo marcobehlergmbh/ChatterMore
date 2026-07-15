@@ -56,6 +56,9 @@ import com.example.mattermostlite.model.FeedFile
 import com.example.mattermostlite.model.FeedItem
 import com.example.mattermostlite.model.ServerConfig
 import com.example.mattermostlite.data.AttachmentSelection
+import com.example.mattermostlite.data.IncomingShare
+import com.example.mattermostlite.data.IncomingShareParser
+import com.example.mattermostlite.data.combineSharedDraftText
 import com.example.mattermostlite.network.MattermostImageLoader
 import com.example.mattermostlite.ui.DraftAttachmentAdapter
 import com.example.mattermostlite.ui.FeedAdapter
@@ -119,6 +122,9 @@ class MainActivity : ComponentActivity() {
     private var activeVideoPlayer: ExoPlayer? = null
     private var pendingVideoRestore: VideoPlaybackRestore? = null
     private var pendingCapture: AttachmentSelection? = null
+    private var incomingShareDialog: AlertDialog? = null
+    private var normalDraftAfterEdit: String? = null
+    private val incomingShareParser = IncomingShareParser()
     private val attachmentBackCallback = object : OnBackPressedCallback(false) {
         override fun handleOnBackPressed() {
             setAttachmentActionsVisible(false)
@@ -178,6 +184,13 @@ class MainActivity : ComponentActivity() {
             viewModel.enableBenchmarkFixture(intent.getIntExtra(EXTRA_BENCHMARK_MESSAGE_COUNT, 2_000))
         }
         collectState()
+        if (savedInstanceState == null) acceptIncomingShareIntent(intent)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        acceptIncomingShareIntent(intent)
     }
 
     override fun onStart() {
@@ -218,6 +231,9 @@ class MainActivity : ComponentActivity() {
         fullscreenImageDialog = null
         fullscreenVideoDialog?.dismiss()
         fullscreenVideoDialog = null
+        incomingShareDialog?.setOnDismissListener(null)
+        incomingShareDialog?.dismiss()
+        incomingShareDialog = null
         sunoController.close()
         super.onDestroy()
     }
@@ -511,6 +527,9 @@ class MainActivity : ComponentActivity() {
                 launch { viewModel.messageEdit.collect(::renderMessageEdit) }
                 launch { viewModel.composer.collect(::renderComposer) }
                 launch {
+                    viewModel.incomingShares.collect { handleNextIncomingShare() }
+                }
+                launch {
                     viewModel.composerMessages.collect {
                         Toast.makeText(this@MainActivity, it, Toast.LENGTH_LONG).show()
                     }
@@ -579,7 +598,16 @@ class MainActivity : ComponentActivity() {
             }
         } else {
             attachmentButton.isVisible = true
-            if (previousPostId != null) messageInput.text.clear()
+            if (previousPostId != null) {
+                val restoredDraft = normalDraftAfterEdit
+                normalDraftAfterEdit = null
+                if (restoredDraft == null) {
+                    messageInput.text.clear()
+                } else {
+                    messageInput.setText(restoredDraft)
+                    messageInput.setSelection(messageInput.text.length)
+                }
+            }
             messageInput.isEnabled = true
             updateComposerButtons()
             cancelEditButton.isEnabled = true
@@ -595,6 +623,7 @@ class MainActivity : ComponentActivity() {
             }
         }
         renderedEditingPostId = state?.postId
+        messageInput.post(::handleNextIncomingShare)
     }
 
     private fun renderComposer(state: ComposerState) {
@@ -651,8 +680,81 @@ class MainActivity : ComponentActivity() {
                     }
                 }
                 restorePendingVideo()
+                handleNextIncomingShare()
             }
         }
+    }
+
+    private fun acceptIncomingShareIntent(shareIntent: Intent) {
+        if (shareIntent.action != Intent.ACTION_SEND && shareIntent.action != Intent.ACTION_SEND_MULTIPLE) {
+            return
+        }
+        incomingShareParser.parse(shareIntent)?.let(viewModel::enqueueIncomingShare)
+        shareIntent.action = null
+    }
+
+    private fun handleNextIncomingShare() {
+        if (viewModel.screen.value !is ScreenState.Channel || incomingShareDialog != null) return
+        if (viewModel.messageEdit.value?.submitting == true) return
+        val share = viewModel.incomingShares.value.firstOrNull() ?: return
+        val composer = viewModel.composer.value
+        val hasDraft = messageInput.text.isNotBlank() ||
+            viewModel.messageEdit.value != null ||
+            composer.attachments.isNotEmpty() ||
+            composer.resolvingCount > 0
+        if (!hasDraft) {
+            applyIncomingShare(share, replaceDraft = false)
+            return
+        }
+
+        var resolved = false
+        incomingShareDialog = AlertDialog.Builder(this)
+            .setTitle(R.string.shared_content_title)
+            .setMessage(R.string.shared_content_conflict)
+            .setPositiveButton(R.string.add_shared_content) { _, _ ->
+                resolved = true
+                applyIncomingShare(share, replaceDraft = false)
+            }
+            .setNeutralButton(R.string.replace_shared_content) { _, _ ->
+                resolved = true
+                applyIncomingShare(share, replaceDraft = true)
+            }
+            .setNegativeButton(android.R.string.cancel) { _, _ ->
+                resolved = true
+                viewModel.consumeIncomingShare(share.id)
+            }
+            .setOnCancelListener {
+                if (!resolved) viewModel.consumeIncomingShare(share.id)
+            }
+            .create()
+            .also { dialog ->
+                dialog.setOnDismissListener {
+                    incomingShareDialog = null
+                    messageInput.post(::handleNextIncomingShare)
+                }
+                dialog.show()
+            }
+    }
+
+    private fun applyIncomingShare(share: IncomingShare, replaceDraft: Boolean) {
+        if (!viewModel.consumeIncomingShare(share.id)) return
+        setAttachmentActionsVisible(false)
+
+        val currentDraft = messageInput.text.toString()
+        val nextDraft = if (replaceDraft) {
+            share.text
+        } else {
+            combineSharedDraftText(currentDraft, share.text)
+        }
+        if (replaceDraft) viewModel.discardAttachments()
+        if (viewModel.messageEdit.value != null) {
+            if (renderedEditingPostId != null) normalDraftAfterEdit = nextDraft
+            viewModel.cancelEdit()
+        }
+        messageInput.setText(nextDraft)
+        messageInput.setSelection(messageInput.text.length)
+        if (share.attachments.isNotEmpty()) viewModel.addAttachments(share.attachments)
+        focusMessageInputForShare()
     }
 
     private fun renderConnection(state: ConnectionState) {
@@ -1064,6 +1166,19 @@ class MainActivity : ComponentActivity() {
         messageInput.post {
             requestMessageInputFocus()
             messageInput.postDelayed(::requestMessageInputFocus, EDIT_FOCUS_REASSERT_MS)
+        }
+    }
+
+    private fun focusMessageInputForShare() {
+        messageInput.post {
+            if (viewModel.messageEdit.value != null) return@post
+            messageInput.isFocusableInTouchMode = true
+            messageInput.requestFocus()
+            messageInput.setSelection(messageInput.text.length)
+            WindowCompat.getInsetsController(window, messageInput)
+                .show(WindowInsetsCompat.Type.ime())
+            val manager = getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager
+            manager.showSoftInput(messageInput, InputMethodManager.SHOW_IMPLICIT)
         }
     }
 

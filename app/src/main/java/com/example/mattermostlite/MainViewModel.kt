@@ -7,6 +7,7 @@ import com.example.mattermostlite.data.ChannelRepository
 import com.example.mattermostlite.data.AttachmentSelection
 import com.example.mattermostlite.data.AttachmentStatus
 import com.example.mattermostlite.data.DraftAttachment
+import com.example.mattermostlite.data.IncomingShare
 import com.example.mattermostlite.model.ConnectionState
 import com.example.mattermostlite.model.ChannelNotFoundException
 import com.example.mattermostlite.model.DeliveryState
@@ -81,6 +82,7 @@ class MainViewModel(
     private val _screen = MutableStateFlow<ScreenState>(ScreenState.Loading)
     private val _messageEdit = MutableStateFlow<MessageEditState?>(null)
     private val _composer = MutableStateFlow(ComposerState())
+    private val _incomingShares = MutableStateFlow<List<IncomingShare>>(emptyList())
     private val _composerMessages = MutableSharedFlow<String>(extraBufferCapacity = 8)
     private val uploadJobs = mutableMapOf<String, Job>()
     private val uploadSemaphore = Semaphore(MAX_CONCURRENT_UPLOADS)
@@ -92,6 +94,7 @@ class MainViewModel(
     val screen: StateFlow<ScreenState> = _screen.asStateFlow()
     val messageEdit: StateFlow<MessageEditState?> = _messageEdit.asStateFlow()
     val composer: StateFlow<ComposerState> = _composer.asStateFlow()
+    val incomingShares: StateFlow<List<IncomingShare>> = _incomingShares.asStateFlow()
     val composerMessages: SharedFlow<String> = _composerMessages.asSharedFlow()
     val mutations: SharedFlow<FeedMutation> = repository.mutations
     val connectionState: StateFlow<ConnectionState> = repository.connectionState
@@ -247,6 +250,20 @@ class MainViewModel(
         return true
     }
 
+    fun enqueueIncomingShare(share: IncomingShare) {
+        _incomingShares.update { queued -> queued + share }
+    }
+
+    fun consumeIncomingShare(id: String): Boolean {
+        if (_incomingShares.value.none { it.id == id }) return false
+        _incomingShares.update { queued -> queued.filterNot { it.id == id } }
+        return true
+    }
+
+    fun discardAttachments() {
+        clearAttachments()
+    }
+
     fun removeAttachment(localId: String) {
         uploadJobs.remove(localId)?.cancel()
         val removed = _composer.value.attachments.firstOrNull { it.localId == localId } ?: return
@@ -355,16 +372,35 @@ class MainViewModel(
                         it.copy(status = AttachmentStatus.Uploading(0L, source.sizeBytes))
                     }
                     var lastProgressAt = 0L
-                    val body = container.attachmentDataSource.requestBody(source) { sent, total ->
-                        val now = System.nanoTime()
-                        if (sent == total || now - lastProgressAt >= PROGRESS_INTERVAL_NANOS) {
-                            lastProgressAt = now
-                            updateAttachment(localId) {
-                                it.copy(status = AttachmentStatus.Uploading(sent, total))
+                    var lastProgressPercent = -1
+                    val body = container.attachmentDataSource.requestBody(source)
+                    val file = repository.uploadFile(
+                        fileName = source.name,
+                        clientId = localId,
+                        body = body,
+                        onProgress = { written, total ->
+                            val now = System.nanoTime()
+                            val requestComplete = total != null && written >= total
+                            val percent = total
+                                ?.takeIf { it > 0L }
+                                ?.let { (written.toDouble() * 100.0 / it).toInt().coerceIn(0, 99) }
+                            val shouldReport = written == 0L ||
+                                now - lastProgressAt >= PROGRESS_INTERVAL_NANOS ||
+                                (percent != null && percent > lastProgressPercent)
+                            if (!requestComplete && shouldReport) {
+                                lastProgressAt = now
+                                if (percent != null) lastProgressPercent = percent
+                                updateAttachment(localId) {
+                                    it.copy(status = AttachmentStatus.Uploading(written, total))
+                                }
                             }
-                        }
-                    }
-                    val file = repository.uploadFile(source.name, localId, body)
+                        },
+                        onBodyComplete = {
+                            updateAttachment(localId) {
+                                it.copy(status = AttachmentStatus.Finalizing)
+                            }
+                        },
+                    )
                     updateAttachment(localId) { it.copy(status = AttachmentStatus.Ready(file)) }
                 }
             } catch (error: CancellationException) {

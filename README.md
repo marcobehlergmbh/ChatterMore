@@ -12,6 +12,7 @@ A deliberately small, foreground-only Android client for one Mattermost channel.
 - Keeps optimistic messages visually normal for 500 ms, then underlines them until confirmed.
 - Retries failed sends without losing the message text.
 - Uploads gallery media, camera captures, and files with progress before sending them with optional text.
+- Accepts Android single- and multi-file shares, preparing media previews or regular file attachments plus shared text without auto-sending.
 - Validates known attachment sizes against the Mattermost server limit before upload.
 - Renders authenticated image attachments from bounded server-generated previews.
 - Renders cached user avatars and lightweight YouTube thumbnail previews.

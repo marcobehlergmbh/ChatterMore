@@ -148,12 +148,16 @@ class MattermostApiTest {
         )
 
         val capabilities = api.uploadCapabilities(session)
+        val progress = mutableListOf<Pair<Long, Long?>>()
+        var bodyComplete = false
         val uploaded = api.uploadFile(
             session,
             channelId = "channel-1",
             fileName = "note.txt",
             clientId = "local-1",
             body = "hello".toRequestBody("text/plain".toMediaType()),
+            onProgress = { written, total -> progress += written to total },
+            onBodyComplete = { bodyComplete = true },
         )
 
         assertEquals(1024L, capabilities.maxFileSizeBytes)
@@ -166,6 +170,9 @@ class MattermostApiTest {
         assertTrue(upload.body.contains("channel-1"))
         assertTrue(upload.body.contains("filename=\"note.txt\""))
         assertTrue(upload.body.contains("hello"))
+        assertEquals(0L, progress.first().first)
+        assertEquals(progress.last().second, progress.last().first)
+        assertTrue(bodyComplete)
     }
 
     private fun Request.capture(): CapturedRequest {

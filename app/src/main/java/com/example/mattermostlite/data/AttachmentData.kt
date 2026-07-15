@@ -32,9 +32,11 @@ sealed interface AttachmentStatus {
     data object Queued : AttachmentStatus
 
     data class Uploading(
-        val bytesSent: Long,
+        val bytesWritten: Long,
         val totalBytes: Long?,
     ) : AttachmentStatus
+
+    data object Finalizing : AttachmentStatus
 
     data class Ready(val file: MattermostFile) : AttachmentStatus
 
@@ -78,10 +80,7 @@ class AttachmentDataSource(
         )
     }
 
-    fun requestBody(
-        source: LocalAttachment,
-        onProgress: (bytesSent: Long, totalBytes: Long?) -> Unit,
-    ): RequestBody = object : RequestBody() {
+    fun requestBody(source: LocalAttachment): RequestBody = object : RequestBody() {
         override fun contentType() = source.mimeType.toMediaTypeOrNull()
 
         override fun contentLength(): Long = source.sizeBytes ?: -1L
@@ -91,14 +90,10 @@ class AttachmentDataSource(
                 ?: throw FileNotFoundException("The selected file is no longer available.")
             input.use {
                 val buffer = ByteArray(COPY_BUFFER_SIZE)
-                var sent = 0L
-                onProgress(0L, source.sizeBytes)
                 while (true) {
                     val count = it.read(buffer)
                     if (count < 0) break
                     sink.write(buffer, 0, count)
-                    sent += count
-                    onProgress(sent, source.sizeBytes)
                 }
             }
         }

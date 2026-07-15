@@ -169,7 +169,17 @@ class ChannelRepository(
         fileName: String,
         clientId: String,
         body: RequestBody,
-    ): MattermostFile = api.uploadFile(config, channel.id, fileName, clientId, body)
+        onProgress: (bytesWritten: Long, totalBytes: Long?) -> Unit,
+        onBodyComplete: () -> Unit,
+    ): MattermostFile = api.uploadFile(
+        config,
+        channel.id,
+        fileName,
+        clientId,
+        body,
+        onProgress,
+        onBodyComplete,
+    )
 
     suspend fun send(message: String, uploadedFiles: List<MattermostFile> = emptyList()): Boolean {
         if (message.isBlank() && uploadedFiles.isEmpty()) return false

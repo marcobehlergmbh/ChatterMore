@@ -97,15 +97,18 @@ class DraftAttachmentAdapter(
                     progress.isIndeterminate = true
                 }
                 is AttachmentStatus.Uploading -> {
-                    val percent = upload.totalBytes
-                        ?.takeIf { it > 0L }
-                        ?.let { (upload.bytesSent * 100L / it).coerceIn(0L, 100L).toInt() }
+                    val percent = uploadPercent(upload.bytesWritten, upload.totalBytes)
                     status.text = percent?.let {
                         context.getString(R.string.attachment_uploading_percent, it)
                     } ?: context.getString(R.string.attachment_uploading)
                     progress.isVisible = true
                     progress.isIndeterminate = percent == null
-                    if (percent != null) progress.progress = percent
+                    if (percent != null) progress.setProgress(percent, true)
+                }
+                AttachmentStatus.Finalizing -> {
+                    status.setText(R.string.attachment_finalizing)
+                    progress.isVisible = true
+                    progress.isIndeterminate = true
                 }
                 is AttachmentStatus.Ready -> {
                     status.text = size ?: context.getString(R.string.attachment_ready)
@@ -141,3 +144,7 @@ class DraftAttachmentAdapter(
         }
     }
 }
+
+internal fun uploadPercent(bytesWritten: Long, totalBytes: Long?): Int? = totalBytes
+    ?.takeIf { it > 0L }
+    ?.let { (bytesWritten.toDouble() * 100.0 / it).toInt().coerceIn(0, 99) }

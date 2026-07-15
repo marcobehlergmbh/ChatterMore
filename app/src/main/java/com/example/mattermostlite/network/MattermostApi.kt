@@ -156,6 +156,8 @@ class MattermostApi(
         fileName: String,
         clientId: String,
         body: RequestBody,
+        onProgress: (bytesWritten: Long, totalBytes: Long?) -> Unit = { _, _ -> },
+        onBodyComplete: () -> Unit = {},
     ): MattermostFile {
         val multipart = MultipartBody.Builder()
             .setType(MultipartBody.FORM)
@@ -163,10 +165,11 @@ class MattermostApi(
             .addFormDataPart("client_ids", clientId)
             .addFormDataPart("files", fileName, body)
             .build()
+        val progressBody = ProgressRequestBody(multipart, onProgress, onBodyComplete)
         val files = parseUploadedFiles(
             execute(
                 request(config, apiUrl(config, "files")).newBuilder()
-                    .post(multipart)
+                    .post(progressBody)
                     .build(),
                 uploadClient,
             ),
