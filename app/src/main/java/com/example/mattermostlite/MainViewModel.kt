@@ -101,6 +101,7 @@ class MainViewModel(
     val connectionState: StateFlow<ConnectionState> = repository.connectionState
     val refreshing: StateFlow<Boolean> = repository.refreshing
     val userPresence = repository.userPresence
+    val mentionContext = repository.mentionContext
 
     init {
         viewModelScope.launch {
@@ -176,6 +177,8 @@ class MainViewModel(
                 author = "User ${index % 12}",
                 message = if (index % 11 == 0) {
                     "A benchmark link preview at row $index https://example.com/releases/$index"
+                } else if (index % 17 == 0) {
+                    "@channel benchmark broadcast mention at row $index"
                 } else if (index % 7 == 0) {
                     "A longer benchmark message at row $index that wraps across multiple lines to exercise text layout without Markdown or attachments."
                 } else if (index % 13 == 0) {

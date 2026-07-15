@@ -24,6 +24,7 @@ A deliberately small, foreground-only Android client for one Mattermost channel.
 - Shows other attached filenames and downloads them through Android's download manager.
 - Makes web links clickable with a regex-free, cached message parser.
 - Renders Mattermost-style text smileys as Unicode emoji without changing stored messages.
+- Highlights server-resolved `@username` mentions and visually distinguishes direct, `@channel`, `@all`, and `@here` attention.
 - Refreshes the latest messages after a fling reaches the bottom or a 48dp bottom overscroll.
 - Keeps a bounded 2,000-row in-memory feed and fetches evicted history again when needed.
 

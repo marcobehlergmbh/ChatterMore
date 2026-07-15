@@ -1,5 +1,7 @@
 package com.example.mattermostlite.ui
 
+import com.example.mattermostlite.model.MattermostUser
+import com.example.mattermostlite.model.MentionContext
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
@@ -113,5 +115,85 @@ class MessageLinkParserTest {
         assertTrue(formatted != null)
         assertEquals("Hi 🙂 welcome 😉", formatted?.text)
         assertTrue(formatted?.links?.isEmpty() == true)
+    }
+
+    @Test
+    fun `finds user mentions with display ranges shifted by smileys`() {
+        val formatted = MessageLinkParser.format(":) Hi @Alice and @dev-team.")!!
+
+        assertEquals("🙂 Hi @Alice and @dev-team.", formatted.text)
+        assertEquals(listOf("alice", "dev-team"), formatted.mentions.map { it.normalizedName })
+        assertEquals(
+            listOf("@Alice", "@dev-team"),
+            formatted.mentions.map { formatted.text.substring(it.start, it.end) },
+        )
+    }
+
+    @Test
+    fun `preserves valid usernames ending in underscores or hyphens`() {
+        val formatted = MessageLinkParser.format("Hi @a__e__ and @release-team-.")!!
+
+        assertEquals(listOf("a__e__", "release-team-"), formatted.mentions.map { it.normalizedName })
+        assertEquals(
+            listOf("@a__e__", "@release-team-"),
+            formatted.mentions.map { formatted.text.substring(it.start, it.end) },
+        )
+        assertEquals(setOf("a__e__", "release-team-"), MessageLinkParser.findMentionUsernames(formatted.text))
+    }
+
+    @Test
+    fun `recognizes broadcast mentions as distinct kinds`() {
+        val formatted = MessageLinkParser.format("@Channel, @HERE and @all")!!
+
+        assertEquals(
+            listOf(MentionKind.CHANNEL, MentionKind.HERE, MentionKind.ALL),
+            formatted.mentions.map { it.kind },
+        )
+    }
+
+    @Test
+    fun `does not mention emails URLs code escapes or partial broadcast names`() {
+        val text = "alice@example.com https://example.com/@alice `@alice` \\@alice @channeling"
+        val formatted = MessageLinkParser.format(text)!!
+
+        assertEquals(
+            "alice@example.com https://example.com/@alice `@alice` @alice @channeling",
+            formatted.text,
+        )
+        assertEquals(listOf("channeling"), formatted.mentions.map { it.normalizedName })
+        assertEquals(MentionKind.USER, formatted.mentions.single().kind)
+    }
+
+    @Test
+    fun `returns unique user candidates without broadcasts`() {
+        assertEquals(
+            setOf("alice", "bob"),
+            MessageLinkParser.findMentionUsernames("@Alice @alice @channel @bob"),
+        )
+    }
+
+    @Test
+    fun `only resolved usernames highlight and direct mentions outrank broadcasts`() {
+        val alice = MattermostUser("user-alice", "alice")
+        val context = MentionContext(
+            currentUserId = alice.id,
+            currentUsername = alice.username,
+            usersByUsername = mapOf("alice" to alice),
+        )
+        val formatted = MessageLinkParser.format("@unknown @channel @Alice")!!
+
+        val resolution = MessageLinkParser.resolveMentions(formatted, context)
+
+        assertEquals(listOf(MentionKind.CHANNEL, MentionKind.USER), resolution.mentions.map { it.kind })
+        assertEquals(MessageEmphasis.DIRECT, resolution.emphasis)
+    }
+
+    @Test
+    fun `here remains a distinct visual emphasis`() {
+        val formatted = MessageLinkParser.format("@here can someone review this?")!!
+
+        val resolution = MessageLinkParser.resolveMentions(formatted, MentionContext())
+
+        assertEquals(MessageEmphasis.HERE, resolution.emphasis)
     }
 }

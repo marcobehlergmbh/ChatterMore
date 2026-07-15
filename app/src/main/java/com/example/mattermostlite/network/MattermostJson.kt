@@ -220,6 +220,9 @@ internal fun loginBody(username: String, password: String): String = buildJsonOb
 internal fun userIdsBody(ids: Collection<String>): String =
     JsonArray(ids.map(::JsonPrimitive)).toString()
 
+internal fun usernamesBody(usernames: Collection<String>): String =
+    JsonArray(usernames.map(::JsonPrimitive)).toString()
+
 internal fun errorMessage(json: String): String = runCatching {
     mattermostJson.parseToJsonElement(json).jsonObject.string("message")
 }.getOrDefault("")

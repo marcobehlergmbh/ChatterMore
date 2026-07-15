@@ -6,6 +6,15 @@
     android:paddingHorizontal="@dimen/message_horizontal_padding"
     android:paddingVertical="@dimen/message_group_vertical_spacing">
 
+    <View
+        android:id="@+id/messageAttentionBar"
+        android:layout_width="3dp"
+        android:layout_height="match_parent"
+        android:layout_marginEnd="5dp"
+        android:background="@color/mention_direct_accent"
+        android:importantForAccessibility="no"
+        android:visibility="invisible" />
+
     <FrameLayout
         android:layout_width="52dp"
         android:layout_height="match_parent"
@@ -34,6 +43,7 @@
     </FrameLayout>
 
     <LinearLayout
+        android:id="@+id/messageContent"
         android:layout_width="0dp"
         android:layout_height="wrap_content"
         android:layout_weight="1"

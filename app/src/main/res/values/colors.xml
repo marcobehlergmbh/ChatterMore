@@ -10,6 +10,16 @@
     <color name="divider">#2C2C2C</color>
     <color name="attachment_surface">#171717</color>
     <color name="mattermost_blue">#75A7FF</color>
+    <color name="mention_user_text">#A8C7FA</color>
+    <color name="mention_user_background">#263750</color>
+    <color name="mention_direct_text">#FFFFFF</color>
+    <color name="mention_direct_background">#315A8C</color>
+    <color name="mention_direct_accent">#75A7FF</color>
+    <color name="mention_direct_surface">#121D2B</color>
+    <color name="mention_broadcast_text">#FFE3A1</color>
+    <color name="mention_broadcast_background">#584315</color>
+    <color name="mention_broadcast_accent">#E3B341</color>
+    <color name="mention_broadcast_surface">#241D0E</color>
     <color name="success">#56D364</color>
     <color name="warning">#E3B341</color>
     <color name="error">#FF7B72</color>

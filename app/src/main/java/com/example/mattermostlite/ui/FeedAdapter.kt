@@ -26,6 +26,7 @@ import android.widget.ImageView
 import android.util.TypedValue
 import android.util.LruCache
 import androidx.core.content.ContextCompat
+import androidx.core.view.ViewCompat
 import androidx.recyclerview.widget.RecyclerView
 import com.example.mattermostlite.R
 import com.example.mattermostlite.model.DeliveryState
@@ -33,6 +34,7 @@ import com.example.mattermostlite.model.FeedImage
 import com.example.mattermostlite.model.FeedFile
 import com.example.mattermostlite.model.FeedItem
 import com.example.mattermostlite.model.LinkPreview
+import com.example.mattermostlite.model.MentionContext
 import com.example.mattermostlite.model.UserPresence
 import com.example.mattermostlite.network.MattermostImageLoader
 import java.time.Instant
@@ -56,9 +58,9 @@ class FeedAdapter(
     private val timeFormatter = DateTimeFormatter.ofPattern("HH:mm")
         .withZone(ZoneId.systemDefault())
     private val timeLabels = LruCache<Long, String>(2_048)
-    private val formattedMessages = object : LruCache<String, CharSequence>(LINK_CACHE_CHARACTERS) {
-        override fun sizeOf(key: String, value: CharSequence): Int =
-            (key.length + value.length).coerceAtLeast(1)
+    private val formattedMessages = object : LruCache<String, RenderedMessage>(LINK_CACHE_CHARACTERS) {
+        override fun sizeOf(key: String, value: RenderedMessage): Int =
+            (key.length + value.text.length).coerceAtLeast(1)
     }
     private val youtubeMessages = object : LruCache<String, CachedYouTube>(LINK_CACHE_CHARACTERS) {
         override fun sizeOf(key: String, value: CachedYouTube): Int = key.length.coerceAtLeast(1)
@@ -66,6 +68,8 @@ class FeedAdapter(
     private val sunoMessages = object : LruCache<String, CachedSuno>(LINK_CACHE_CHARACTERS) {
         override fun sizeOf(key: String, value: CachedSuno): Int = key.length.coerceAtLeast(1)
     }
+    private var mentionContext = MentionContext()
+    private var mentionStyle: MentionStyle? = null
 
     init {
         setHasStableIds(true)
@@ -174,6 +178,17 @@ class FeedAdapter(
             .forEach { notifyItemChanged(it, PAYLOAD_PRESENCE) }
     }
 
+    fun updateMentionContext(context: MentionContext) {
+        if (mentionContext == context) return
+        mentionContext = context
+        formattedMessages.snapshot().keys
+            .filter { '@' in it }
+            .forEach(formattedMessages::remove)
+        items.forEachIndexed { index, item ->
+            if ('@' in item.message) notifyItemChanged(index, PAYLOAD_MENTIONS)
+        }
+    }
+
     fun itemAt(position: Int): FeedItem? = items.getOrNull(position)
 
     fun positionOf(key: String): Int = positions[key] ?: RecyclerView.NO_POSITION
@@ -197,6 +212,8 @@ class FeedAdapter(
     }
 
     inner class MessageViewHolder(view: View) : RecyclerView.ViewHolder(view) {
+        private val attentionBar = view.findViewById<View>(R.id.messageAttentionBar)
+        private val content = view.findViewById<View>(R.id.messageContent)
         private val header = view.findViewById<View>(R.id.messageHeader)
         private val avatar = view.findViewById<ImageView>(R.id.messageAvatar)
         private val presenceBadge = view.findViewById<PresenceBadgeView>(R.id.messagePresence)
@@ -274,8 +291,16 @@ class FeedAdapter(
                 clearAvatar()
             }
             bindPresence(item, isContinuation)
-            body.text = messageText(item, itemView.context)
+            val renderedMessage = messageText(item, itemView.context)
+            body.text = renderedMessage.text
             body.visibility = if (item.message.isBlank()) View.GONE else View.VISIBLE
+            bindAttention(
+                if (item.userId == mentionContext.currentUserId) {
+                    MessageEmphasis.NONE
+                } else {
+                    renderedMessage.emphasis
+                },
+            )
             bindSuno(sunoSong(item.message))
             bindYouTube(youtubeVideo(item.message))
             bindLinkPreview(LinkPreviewSelector.firstGeneric(item.linkPreviews))
@@ -341,6 +366,38 @@ class FeedAdapter(
             images?.clearImages()
             files?.clearFiles()
             presenceBadge.visibility = View.GONE
+            bindAttention(MessageEmphasis.NONE)
+        }
+
+        private fun bindAttention(emphasis: MessageEmphasis) {
+            val (barColor, surfaceColor, description) = when (emphasis) {
+                MessageEmphasis.NONE -> Triple(0, 0, null)
+                MessageEmphasis.DIRECT -> Triple(
+                    R.color.mention_direct_accent,
+                    R.color.mention_direct_surface,
+                    R.string.mentions_you,
+                )
+                MessageEmphasis.BROADCAST -> Triple(
+                    R.color.mention_broadcast_accent,
+                    R.color.mention_broadcast_surface,
+                    R.string.channel_wide_mention,
+                )
+                MessageEmphasis.HERE -> Triple(
+                    R.color.mention_broadcast_accent,
+                    R.color.mention_broadcast_surface,
+                    R.string.online_members_mention,
+                )
+            }
+            if (emphasis == MessageEmphasis.NONE) {
+                attentionBar.visibility = View.INVISIBLE
+                content.background = null
+                ViewCompat.setStateDescription(itemView, null)
+            } else {
+                attentionBar.visibility = View.VISIBLE
+                attentionBar.setBackgroundColor(ContextCompat.getColor(itemView.context, barColor))
+                content.setBackgroundColor(ContextCompat.getColor(itemView.context, surfaceColor))
+                ViewCompat.setStateDescription(itemView, itemView.context.getString(description!!))
+            }
         }
 
         fun bindPresence(item: FeedItem, isContinuation: Boolean) {
@@ -569,6 +626,7 @@ class FeedAdapter(
         const val PAYLOAD_CONTENT = "content"
         const val PAYLOAD_GROUPING = "grouping"
         const val PAYLOAD_PRESENCE = "presence"
+        const val PAYLOAD_MENTIONS = "mentions"
         const val TAP_GLOW_CORNER_DP = 12f
         const val TAP_GLOW_PEAK_ALPHA = 105
         const val TAP_GLOW_IN_MS = 120L
@@ -585,19 +643,27 @@ class FeedAdapter(
         }
     }
 
-    private fun formattedMessage(message: String): CharSequence {
+    private fun formattedMessage(message: String, context: Context): RenderedMessage {
         formattedMessages.get(message)?.let { return it }
-        val parsed = MessageLinkParser.parse(message)
-        if (parsed !== message) {
-            formattedMessages.put(message, parsed)
+        val style = mentionStyle ?: MentionStyle(
+            userText = ContextCompat.getColor(context, R.color.mention_user_text),
+            userBackground = ContextCompat.getColor(context, R.color.mention_user_background),
+            directText = ContextCompat.getColor(context, R.color.mention_direct_text),
+            directBackground = ContextCompat.getColor(context, R.color.mention_direct_background),
+            broadcastText = ContextCompat.getColor(context, R.color.mention_broadcast_text),
+            broadcastBackground = ContextCompat.getColor(context, R.color.mention_broadcast_background),
+        ).also { mentionStyle = it }
+        return MessageLinkParser.render(message, mentionContext, style).also { rendered ->
+            if (rendered.text !== message || rendered.emphasis != MessageEmphasis.NONE || '@' in message) {
+                formattedMessages.put(message, rendered)
+            }
         }
-        return parsed
     }
 
-    private fun messageText(item: FeedItem, context: Context): CharSequence {
-        val message = formattedMessage(item.message)
+    private fun messageText(item: FeedItem, context: Context): RenderedMessage {
+        val message = formattedMessage(item.message, context)
         if (item.editAt <= 0L || item.message.isBlank()) return message
-        return SpannableStringBuilder(message).apply {
+        val editedText = SpannableStringBuilder(message.text).apply {
             append(' ')
             val markerStart = length
             append(context.getString(R.string.edited_hint))
@@ -620,6 +686,7 @@ class FeedAdapter(
                 Spannable.SPAN_EXCLUSIVE_EXCLUSIVE,
             )
         }
+        return message.copy(text = editedText)
     }
 
     private fun youtubeVideo(message: String): YouTubeVideo? {

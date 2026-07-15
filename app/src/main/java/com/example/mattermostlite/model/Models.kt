@@ -28,6 +28,12 @@ data class MattermostUser(
             .ifBlank { username.ifBlank { id } }
 }
 
+data class MentionContext(
+    val currentUserId: String = "",
+    val currentUsername: String = "",
+    val usersByUsername: Map<String, MattermostUser> = emptyMap(),
+)
+
 data class MattermostUserStatus(
     val userId: String,
     val status: String,

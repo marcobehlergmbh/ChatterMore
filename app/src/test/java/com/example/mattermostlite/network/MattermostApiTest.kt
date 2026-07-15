@@ -153,6 +153,39 @@ class MattermostApiTest {
     }
 
     @Test
+    fun `resolves mention usernames in one authenticated request`() = runBlocking {
+        var captured: CapturedRequest? = null
+        val client = OkHttpClient.Builder()
+            .addInterceptor { chain ->
+                val request = chain.request()
+                captured = request.capture()
+                Response.Builder()
+                    .request(request)
+                    .protocol(Protocol.HTTP_1_1)
+                    .code(200)
+                    .message("OK")
+                    .body("""[{"id":"user-1","username":"alice"}]""".toResponseBody(JSON_MEDIA_TYPE))
+                    .build()
+            }
+            .build()
+        val api = MattermostApi(client)
+        val session = AuthenticatedServerConfig(
+            baseUrl = "https://mattermost.example.com",
+            teamName = "engineering",
+            channelName = "town-square",
+            token = "session-token",
+        )
+
+        val users = api.usersByUsernames(session, listOf("alice", "bob"))
+
+        assertEquals(listOf("alice"), users.map { it.username })
+        assertEquals("/api/v4/users/usernames", captured?.path)
+        assertEquals("POST", captured?.method)
+        assertEquals("Bearer session-token", captured?.authorization)
+        assertEquals("[\"alice\",\"bob\"]", captured?.body)
+    }
+
+    @Test
     fun `loads upload capabilities and uploads multipart file`() = runBlocking {
         val requests = mutableListOf<CapturedRequest>()
         val client = OkHttpClient.Builder()

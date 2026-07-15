@@ -526,6 +526,7 @@ class MainActivity : ComponentActivity() {
                 launch { viewModel.mutations.collect(::applyMutation) }
                 launch { viewModel.connectionState.collect(::renderConnection) }
                 launch { viewModel.userPresence.collect(adapter::updatePresence) }
+                launch { viewModel.mentionContext.collect(adapter::updateMentionContext) }
                 launch { viewModel.refreshing.collect { latestProgress.isVisible = it } }
                 launch { viewModel.messageEdit.collect(::renderMessageEdit) }
                 launch { viewModel.composer.collect(::renderComposer) }

@@ -9,6 +9,7 @@ import com.example.mattermostlite.model.MattermostChannel
 import com.example.mattermostlite.model.MattermostFile
 import com.example.mattermostlite.model.MattermostPost
 import com.example.mattermostlite.model.MattermostUser
+import com.example.mattermostlite.model.MentionContext
 import com.example.mattermostlite.model.ServerConfig
 import com.example.mattermostlite.model.SocketCursor
 import com.example.mattermostlite.model.SocketSignal
@@ -16,6 +17,7 @@ import com.example.mattermostlite.model.UploadCapabilities
 import com.example.mattermostlite.model.UserPresence
 import com.example.mattermostlite.network.MattermostApi
 import com.example.mattermostlite.network.MattermostSocket
+import com.example.mattermostlite.ui.MessageLinkParser
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -34,6 +36,7 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.IOException
 import java.util.UUID
+import java.util.Locale
 import okhttp3.RequestBody
 import kotlin.math.min
 import kotlin.random.Random
@@ -49,17 +52,20 @@ class ChannelRepository(
     private val feedMutex = Mutex()
     private val olderMutex = Mutex()
     private val refreshMutex = Mutex()
+    private val mentionMutex = Mutex()
     private val _mutations = MutableSharedFlow<FeedMutation>(extraBufferCapacity = 256)
     private val _connectionState = MutableStateFlow(ConnectionState.OFFLINE)
     private val _refreshing = MutableStateFlow(false)
     private val _uploadCapabilities = MutableStateFlow(UploadCapabilities())
     private val _userPresence = MutableStateFlow<Map<String, UserPresence>>(emptyMap())
+    private val _mentionContext = MutableStateFlow(MentionContext())
 
     val mutations: SharedFlow<FeedMutation> = _mutations.asSharedFlow()
     val connectionState: StateFlow<ConnectionState> = _connectionState.asStateFlow()
     val refreshing: StateFlow<Boolean> = _refreshing.asStateFlow()
     val uploadCapabilities: StateFlow<UploadCapabilities> = _uploadCapabilities.asStateFlow()
     val userPresence: StateFlow<Map<String, UserPresence>> = _userPresence.asStateFlow()
+    val mentionContext: StateFlow<MentionContext> = _mentionContext.asStateFlow()
 
     private lateinit var config: AuthenticatedServerConfig
     private lateinit var channel: MattermostChannel
@@ -72,6 +78,10 @@ class ChannelRepository(
     private var socketReady = CompletableDeferred<Unit>()
     private var presenceGeneration = 0
     private val inFlightPresence = mutableSetOf<Pair<Int, String>>()
+    private val mentionUsersByUsername = mutableMapOf<String, MattermostUser>()
+    private val negativeMentionUsernames = mutableSetOf<String>()
+    private val inFlightMentionUsernames = mutableSetOf<String>()
+    private var mentionGeneration = 0
 
     suspend fun initialize(
         rawConfig: ServerConfig,
@@ -84,9 +94,11 @@ class ChannelRepository(
         presenceStore.clear()
         _userPresence.value = emptyMap()
         _uploadCapabilities.value = UploadCapabilities()
+        clearMentionContext()
         val (authenticatedConfig, authenticatedUser) = api.login(rawConfig)
         config = authenticatedConfig
         currentUser = authenticatedUser
+        resetMentionContext(authenticatedUser)
         channel = api.resolveChannel(config)
         _uploadCapabilities.value = runCatching { api.uploadCapabilities(config) }
             .getOrDefault(UploadCapabilities())
@@ -100,6 +112,7 @@ class ChannelRepository(
         refreshPresence(posts.map(MattermostPost::userId) + currentUser.id)
         val mutation = feedMutex.withLock { feed.replace(posts, profiles + currentUser) }
         _mutations.emit(mutation)
+        scheduleMentionResolution(posts)
         return Triple(channel, currentUser, config)
     }
 
@@ -128,6 +141,7 @@ class ChannelRepository(
                 }
                 if (newVisibleCursor != visibleCursor) {
                     emitAll(mutations)
+                    scheduleMentionResolution(posts)
                     ensurePresence(posts.map(MattermostPost::userId))
                     return
                 }
@@ -160,6 +174,7 @@ class ChannelRepository(
                     val posts = page.orderedPosts
                     val profiles = fetchProfiles(posts)
                     emitAll(feedMutex.withLock { feed.merge(posts, profiles) })
+                    scheduleMentionResolution(posts)
                     ensurePresence(posts.map(MattermostPost::userId))
                     val next = posts.maxWithOrNull(POST_ORDER)?.id
                     if (posts.size < PAGE_SIZE || next.isNullOrBlank() || next == currentCursor) break
@@ -171,6 +186,7 @@ class ChannelRepository(
             val head = api.posts(config, channel.id)
             val profiles = fetchProfiles(head.orderedPosts)
             emitAll(feedMutex.withLock { feed.merge(head.orderedPosts, profiles) })
+            scheduleMentionResolution(head.orderedPosts)
             ensurePresence(head.orderedPosts.map(MattermostPost::userId))
         } finally {
             _refreshing.value = false
@@ -224,6 +240,7 @@ class ChannelRepository(
         return try {
             val post = api.patchPost(config, postId, message)
             emitAll(feedMutex.withLock { feed.merge(listOf(post), listOf(currentUser)) })
+            scheduleMentionResolution(listOf(post))
             true
         } catch (_: Exception) {
             false
@@ -247,6 +264,7 @@ class ChannelRepository(
         presenceGeneration++
         presenceStore.clear()
         _userPresence.value = emptyMap()
+        scope.launch { clearMentionContext() }
     }
 
     private suspend fun submitPending(
@@ -256,6 +274,7 @@ class ChannelRepository(
     ): Boolean = try {
         val post = api.createPost(config, channel.id, message, pendingId, fileIds)
         emitAll(feedMutex.withLock { feed.merge(listOf(post), listOf(currentUser)) })
+        scheduleMentionResolution(listOf(post))
         true
     } catch (error: Exception) {
         feedMutex.withLock { feed.setPendingState(pendingId, DeliveryState.FAILED) }
@@ -334,6 +353,7 @@ class ChannelRepository(
         val sequenceGap = expected != null && signal.sequence != expected
         socketCursor = socketCursor?.copy(nextSequence = signal.sequence + 1)
         emitAll(feedMutex.withLock { feed.merge(listOf(signal.post)) })
+        scheduleMentionResolution(listOf(signal.post))
 
         if (signal.post.fileIds.isNotEmpty() && signal.post.files.isEmpty() && signal.post.deleteAt == 0L) {
             scope.launch {
@@ -357,6 +377,7 @@ class ChannelRepository(
         if (missing.isNotEmpty()) {
             scope.launch {
                 runCatching { api.users(config, missing) }.getOrNull()?.let { profiles ->
+                    addMentionUsers(profiles)
                     emitAll(feedMutex.withLock { feed.updateProfiles(profiles) })
                 }
             }
@@ -382,7 +403,9 @@ class ChannelRepository(
 
     private suspend fun fetchProfiles(posts: Collection<MattermostPost>): List<MattermostUser> {
         val missing = feedMutex.withLock { feed.missingUserIds(posts) }
-        return if (missing.isEmpty()) emptyList() else api.users(config, missing)
+        val profiles = if (missing.isEmpty()) emptyList() else api.users(config, missing)
+        addMentionUsers(profiles)
+        return profiles
     }
 
     private suspend fun refreshLatestSafely() {
@@ -426,6 +449,104 @@ class ChannelRepository(
         }
     }
 
+    private fun scheduleMentionResolution(posts: Collection<MattermostPost>) {
+        if (posts.isEmpty()) return
+        val messages = posts.asSequence()
+            .filter { it.deleteAt == 0L && it.message.isNotBlank() }
+            .map(MattermostPost::message)
+            .toList()
+        if (messages.isNotEmpty()) scope.launch { resolveMentionUsers(messages) }
+    }
+
+    private suspend fun resolveMentionUsers(messages: Collection<String>) {
+        val candidates = messages.asSequence()
+            .flatMap { MessageLinkParser.findMentionUsernames(it).asSequence() }
+            .toSet()
+        if (candidates.isEmpty()) return
+        val generation: Int
+        val requested = mentionMutex.withLock {
+            generation = mentionGeneration
+            candidates.asSequence()
+                .filterNot(mentionUsersByUsername::containsKey)
+                .filterNot(negativeMentionUsernames::contains)
+                .filter { inFlightMentionUsernames.add(it) }
+                .toList()
+        }
+        if (requested.isEmpty()) return
+
+        val resolved = mutableListOf<MattermostUser>()
+        var completed = true
+        requested.chunked(MAX_MENTION_LOOKUP_USERNAMES).forEach { chunk ->
+            val users = runCatching { api.usersByUsernames(config, chunk) }.getOrNull()
+            if (users == null) {
+                completed = false
+            } else {
+                resolved += users
+            }
+        }
+        mentionMutex.withLock {
+            requested.forEach(inFlightMentionUsernames::remove)
+            if (generation != mentionGeneration) return@withLock
+            resolved.forEach { user ->
+                if (user.username.isNotBlank()) {
+                    mentionUsersByUsername[user.username.lowercase(Locale.ROOT)] = user
+                }
+            }
+            if (completed) {
+                val found = resolved.mapTo(mutableSetOf()) { it.username.lowercase(Locale.ROOT) }
+                requested.filterNot(found::contains).forEach(negativeMentionUsernames::add)
+            }
+            publishMentionContext()
+        }
+    }
+
+    private suspend fun addMentionUsers(users: Collection<MattermostUser>) {
+        if (users.isEmpty()) return
+        mentionMutex.withLock {
+            users.forEach { user ->
+                if (user.username.isNotBlank()) {
+                    val username = user.username.lowercase(Locale.ROOT)
+                    mentionUsersByUsername[username] = user
+                    negativeMentionUsernames.remove(username)
+                }
+            }
+            publishMentionContext()
+        }
+    }
+
+    private suspend fun resetMentionContext(user: MattermostUser) {
+        mentionMutex.withLock {
+            mentionGeneration++
+            mentionUsersByUsername.clear()
+            negativeMentionUsernames.clear()
+            inFlightMentionUsernames.clear()
+            if (user.username.isNotBlank()) {
+                mentionUsersByUsername[user.username.lowercase(Locale.ROOT)] = user
+            }
+            _mentionContext.value = MentionContext(
+                currentUserId = user.id,
+                currentUsername = user.username,
+                usersByUsername = mentionUsersByUsername.toMap(),
+            )
+        }
+    }
+
+    private suspend fun clearMentionContext() {
+        mentionMutex.withLock {
+            mentionGeneration++
+            mentionUsersByUsername.clear()
+            negativeMentionUsernames.clear()
+            inFlightMentionUsernames.clear()
+            _mentionContext.value = MentionContext()
+        }
+    }
+
+    private fun publishMentionContext() {
+        _mentionContext.value = _mentionContext.value.copy(
+            usersByUsername = mentionUsersByUsername.toMap(),
+        )
+    }
+
     private suspend fun emitAll(mutations: Collection<FeedMutation>) {
         mutations.forEach { _mutations.emit(it) }
     }
@@ -434,6 +555,7 @@ class ChannelRepository(
         const val PAGE_SIZE = 100
         const val MAX_REFRESH_PAGES = 50
         const val MAX_HISTORY_SCAN_PAGES = 50
+        const val MAX_MENTION_LOOKUP_USERNAMES = 100
         const val UNCONFIRMED_GRACE_MS = 500L
         val POST_ORDER = compareBy<MattermostPost>({ it.createAt }, { it.id })
     }

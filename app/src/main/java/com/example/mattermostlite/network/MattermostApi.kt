@@ -141,6 +141,21 @@ class MattermostApi(
         )
     }
 
+    suspend fun usersByUsernames(
+        config: AuthenticatedServerConfig,
+        usernames: Collection<String>,
+    ): List<MattermostUser> {
+        if (usernames.isEmpty()) return emptyList()
+        val body = usernamesBody(usernames).toRequestBody(JSON_MEDIA_TYPE)
+        return parseUsers(
+            execute(
+                request(config, apiUrl(config, "users", "usernames")).newBuilder()
+                    .post(body)
+                    .build(),
+            ),
+        )
+    }
+
     suspend fun userStatuses(
         config: AuthenticatedServerConfig,
         ids: Collection<String>,
