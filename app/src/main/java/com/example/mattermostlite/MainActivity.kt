@@ -17,7 +17,6 @@ import android.view.inputmethod.InputMethodManager
 import android.widget.Button
 import android.widget.EditText
 import android.widget.ImageButton
-import android.widget.ImageView
 import android.widget.ProgressBar
 import android.widget.TextView
 import android.widget.Toast
@@ -67,12 +66,14 @@ import com.example.mattermostlite.ui.HistoryPrefetchPolicy
 import com.example.mattermostlite.ui.DownloadFileName
 import com.example.mattermostlite.ui.editFocusTopOffset
 import com.example.mattermostlite.ui.nextEditFocusTop
+import com.example.mattermostlite.ui.ImageZoomState
 import com.example.mattermostlite.ui.MessageScrollAnchor
 import com.example.mattermostlite.ui.SunoPlaybackController
 import com.example.mattermostlite.ui.YouTubeVideo
 import com.example.mattermostlite.ui.VideoPlaybackErrorDetails
 import com.example.mattermostlite.ui.VideoPlaybackErrorKind
 import com.example.mattermostlite.ui.VideoPlaybackRestore
+import com.example.mattermostlite.ui.ZoomableImageView
 import kotlinx.coroutines.launch
 import java.io.File
 
@@ -80,6 +81,11 @@ private data class EditFocusAnchor(
     val scrollAnchor: MessageScrollAnchor,
     val itemHeight: Int,
     var targetTop: Int,
+)
+
+private data class FullscreenImageRestore(
+    val image: FeedImage,
+    val zoomState: ImageZoomState,
 )
 
 class MainActivity : ComponentActivity() {
@@ -118,6 +124,9 @@ class MainActivity : ComponentActivity() {
     private lateinit var adapter: FeedAdapter
     private lateinit var draftAttachmentAdapter: DraftAttachmentAdapter
     private var fullscreenImageDialog: Dialog? = null
+    private var activeFullscreenImage: FeedImage? = null
+    private var activeFullscreenImageView: ZoomableImageView? = null
+    private var pendingImageRestore: FullscreenImageRestore? = null
     private var fullscreenVideoDialog: Dialog? = null
     private var activeVideoFile: FeedFile? = null
     private var activeVideoPlayer: ExoPlayer? = null
@@ -176,6 +185,7 @@ class MainActivity : ComponentActivity() {
         configureActions()
         configureFeed()
         pendingScrollAnchor = savedInstanceState?.scrollAnchor()
+        pendingImageRestore = savedInstanceState?.fullscreenImageRestore()
         pendingVideoRestore = savedInstanceState?.videoPlaybackRestore()
         pendingCapture = savedInstanceState
             ?.getString(STATE_CAPTURE_URI)
@@ -221,6 +231,7 @@ class MainActivity : ComponentActivity() {
             outState.putInt(STATE_SCROLL_POSITION, anchor.fallbackPosition)
             outState.putInt(STATE_SCROLL_OFFSET, anchor.topOffset)
         }
+        captureFullscreenImage()?.writeTo(outState)
         captureVideoPlayback()?.writeTo(outState)
         pendingCapture?.uri?.toString()?.let { outState.putString(STATE_CAPTURE_URI, it) }
         super.onSaveInstanceState(outState)
@@ -683,6 +694,7 @@ class MainActivity : ComponentActivity() {
                         }
                     }
                 }
+                restorePendingImage()
                 restorePendingVideo()
                 handleNextIncomingShare()
             }
@@ -841,12 +853,17 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun showFullscreenImage(image: FeedImage) {
+        showFullscreenImage(image, ImageZoomState())
+    }
+
+    private fun showFullscreenImage(image: FeedImage, initialZoom: ImageZoomState) {
         fullscreenImageDialog?.dismiss()
         val dialog = Dialog(this, R.style.Theme_MattermostLite_FullscreenImage).apply {
             setContentView(R.layout.dialog_fullscreen_image)
         }
-        val imageView = dialog.findViewById<ImageView>(R.id.fullscreenImage).apply {
+        val imageView = dialog.findViewById<ZoomableImageView>(R.id.fullscreenImage).apply {
             contentDescription = image.name.ifBlank { getString(R.string.image_attachment) }
+            restoreZoomState(initialZoom)
         }
         val progress = dialog.findViewById<ProgressBar>(R.id.fullscreenImageProgress)
         val error = dialog.findViewById<TextView>(R.id.fullscreenImageError)
@@ -859,17 +876,43 @@ class MainActivity : ComponentActivity() {
             ViewGroup.LayoutParams.MATCH_PARENT,
         )
         fullscreenImageDialog = dialog
+        activeFullscreenImage = image
+        activeFullscreenImageView = imageView
         val request = imageLoader.loadFullscreen(image) { bitmap ->
             progress.isVisible = false
             if (bitmap == null) {
                 error.isVisible = true
             } else {
-                imageView.setImageBitmap(bitmap)
+                imageView.setZoomableBitmap(bitmap)
             }
         }
         dialog.setOnDismissListener {
             request.cancel()
-            if (fullscreenImageDialog === dialog) fullscreenImageDialog = null
+            if (fullscreenImageDialog === dialog) {
+                fullscreenImageDialog = null
+                activeFullscreenImage = null
+                activeFullscreenImageView = null
+            }
+        }
+    }
+
+    private fun restorePendingImage() {
+        val restore = pendingImageRestore ?: return
+        pendingImageRestore = null
+        messageList.post {
+            showFullscreenImage(restore.image, restore.zoomState)
+        }
+    }
+
+    private fun captureFullscreenImage(): FullscreenImageRestore? {
+        val image = activeFullscreenImage
+        return if (image != null) {
+            FullscreenImageRestore(
+                image = image,
+                zoomState = activeFullscreenImageView?.currentZoomState() ?: ImageZoomState(),
+            )
+        } else {
+            pendingImageRestore
         }
     }
 
@@ -1142,6 +1185,35 @@ class MainActivity : ComponentActivity() {
         )
     }
 
+    private fun Bundle.fullscreenImageRestore(): FullscreenImageRestore? {
+        val fileId = getString(STATE_IMAGE_FILE_ID)?.takeIf(String::isNotBlank) ?: return null
+        return FullscreenImageRestore(
+            image = FeedImage(
+                fileId = fileId,
+                name = getString(STATE_IMAGE_FILE_NAME).orEmpty().ifBlank { fileId },
+                width = getInt(STATE_IMAGE_WIDTH),
+                height = getInt(STATE_IMAGE_HEIGHT),
+                hasPreviewImage = getBoolean(STATE_IMAGE_HAS_PREVIEW),
+            ),
+            zoomState = ImageZoomState(
+                zoom = getFloat(STATE_IMAGE_ZOOM, 1f),
+                centerXFraction = getFloat(STATE_IMAGE_CENTER_X, 0.5f),
+                centerYFraction = getFloat(STATE_IMAGE_CENTER_Y, 0.5f),
+            ),
+        )
+    }
+
+    private fun FullscreenImageRestore.writeTo(bundle: Bundle) {
+        bundle.putString(STATE_IMAGE_FILE_ID, image.fileId)
+        bundle.putString(STATE_IMAGE_FILE_NAME, image.name)
+        bundle.putInt(STATE_IMAGE_WIDTH, image.width)
+        bundle.putInt(STATE_IMAGE_HEIGHT, image.height)
+        bundle.putBoolean(STATE_IMAGE_HAS_PREVIEW, image.hasPreviewImage)
+        bundle.putFloat(STATE_IMAGE_ZOOM, zoomState.zoom)
+        bundle.putFloat(STATE_IMAGE_CENTER_X, zoomState.centerXFraction)
+        bundle.putFloat(STATE_IMAGE_CENTER_Y, zoomState.centerYFraction)
+    }
+
     private fun VideoPlaybackRestore.writeTo(bundle: Bundle) {
         bundle.putString(STATE_VIDEO_FILE_ID, file.fileId)
         bundle.putString(STATE_VIDEO_FILE_NAME, file.name)
@@ -1219,6 +1291,14 @@ class MainActivity : ComponentActivity() {
         const val STATE_SCROLL_ITEM_KEY = "scroll_item_key"
         const val STATE_SCROLL_POSITION = "scroll_position"
         const val STATE_SCROLL_OFFSET = "scroll_offset"
+        const val STATE_IMAGE_FILE_ID = "image_file_id"
+        const val STATE_IMAGE_FILE_NAME = "image_file_name"
+        const val STATE_IMAGE_WIDTH = "image_width"
+        const val STATE_IMAGE_HEIGHT = "image_height"
+        const val STATE_IMAGE_HAS_PREVIEW = "image_has_preview"
+        const val STATE_IMAGE_ZOOM = "image_zoom"
+        const val STATE_IMAGE_CENTER_X = "image_center_x"
+        const val STATE_IMAGE_CENTER_Y = "image_center_y"
         const val STATE_VIDEO_FILE_ID = "video_file_id"
         const val STATE_VIDEO_FILE_NAME = "video_file_name"
         const val STATE_VIDEO_MIME_TYPE = "video_mime_type"

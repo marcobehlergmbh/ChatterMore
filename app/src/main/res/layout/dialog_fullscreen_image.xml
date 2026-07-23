@@ -1,13 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <merge xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <ImageView
+    <com.example.mattermostlite.ui.ZoomableImageView
         android:id="@+id/fullscreenImage"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
-        android:adjustViewBounds="true"
-        android:contentDescription="@string/image_attachment"
-        android:scaleType="fitCenter" />
+        android:contentDescription="@string/image_attachment" />
 
     <ProgressBar
         android:id="@+id/fullscreenImageProgress"
