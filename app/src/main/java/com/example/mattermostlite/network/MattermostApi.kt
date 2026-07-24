@@ -156,6 +156,32 @@ class MattermostApi(
         )
     }
 
+    suspend fun usersInChannel(
+        config: AuthenticatedServerConfig,
+        channelId: String,
+    ): List<MattermostUser> {
+        val users = mutableListOf<MattermostUser>()
+        var page = 0
+        do {
+            val pageUsers = parseUsers(
+                execute(
+                    request(
+                        config,
+                        apiUrl(config, "users").newBuilder()
+                            .addQueryParameter("in_channel", channelId)
+                            .addQueryParameter("active", "true")
+                            .addQueryParameter("page", page.toString())
+                            .addQueryParameter("per_page", USERS_PER_PAGE.toString())
+                            .build(),
+                    ),
+                ),
+            )
+            users += pageUsers
+            page++
+        } while (pageUsers.size == USERS_PER_PAGE)
+        return users
+    }
+
     suspend fun userStatuses(
         config: AuthenticatedServerConfig,
         ids: Collection<String>,
@@ -310,6 +336,7 @@ class MattermostApi(
     }
 
     private companion object {
+        const val USERS_PER_PAGE = 200
         val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
 
         fun MattermostTeam.matches(input: String): Boolean =

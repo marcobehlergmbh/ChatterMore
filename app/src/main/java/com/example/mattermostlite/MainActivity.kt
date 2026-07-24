@@ -10,6 +10,7 @@ import android.net.Uri
 import android.os.Bundle
 import android.os.Environment
 import android.os.SystemClock
+import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
@@ -17,6 +18,8 @@ import android.view.inputmethod.InputMethodManager
 import android.widget.Button
 import android.widget.EditText
 import android.widget.ImageButton
+import android.widget.ListPopupWindow
+import android.widget.PopupWindow
 import android.widget.ProgressBar
 import android.widget.TextView
 import android.widget.Toast
@@ -54,6 +57,7 @@ import com.example.mattermostlite.model.FeedImage
 import com.example.mattermostlite.model.FeedFile
 import com.example.mattermostlite.model.FeedItem
 import com.example.mattermostlite.model.LinkPreview
+import com.example.mattermostlite.model.MattermostUser
 import com.example.mattermostlite.model.ServerConfig
 import com.example.mattermostlite.data.AttachmentSelection
 import com.example.mattermostlite.data.IncomingShare
@@ -67,6 +71,8 @@ import com.example.mattermostlite.ui.DownloadFileName
 import com.example.mattermostlite.ui.editFocusTopOffset
 import com.example.mattermostlite.ui.nextEditFocusTop
 import com.example.mattermostlite.ui.ImageZoomState
+import com.example.mattermostlite.ui.MentionAutocomplete
+import com.example.mattermostlite.ui.MentionSuggestionAdapter
 import com.example.mattermostlite.ui.MessageScrollAnchor
 import com.example.mattermostlite.ui.SunoPlaybackController
 import com.example.mattermostlite.ui.YouTubeVideo
@@ -123,6 +129,9 @@ class MainActivity : ComponentActivity() {
     private lateinit var layoutManager: LinearLayoutManager
     private lateinit var adapter: FeedAdapter
     private lateinit var draftAttachmentAdapter: DraftAttachmentAdapter
+    private lateinit var mentionSuggestionAdapter: MentionSuggestionAdapter
+    private lateinit var mentionSuggestions: ListPopupWindow
+    private var channelUsers: List<MattermostUser> = emptyList()
     private var fullscreenImageDialog: Dialog? = null
     private var activeFullscreenImage: FeedImage? = null
     private var activeFullscreenImageView: ZoomableImageView? = null
@@ -182,6 +191,7 @@ class MainActivity : ComponentActivity() {
         onBackPressedDispatcher.addCallback(this, attachmentBackCallback)
         configureInsets()
         configureAttachmentComposer()
+        configureMentionAutocomplete()
         configureActions()
         configureFeed()
         pendingScrollAnchor = savedInstanceState?.scrollAnchor()
@@ -219,6 +229,7 @@ class MainActivity : ComponentActivity() {
     override fun onStop() {
         pendingScrollAnchor = captureScrollAnchor() ?: pendingScrollAnchor
         pendingVideoRestore = captureVideoPlayback()
+        dismissMentionSuggestions()
         fullscreenVideoDialog?.dismiss()
         sunoController.stop()
         viewModel.setForeground(false)
@@ -239,6 +250,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onDestroy() {
         messageList.removeCallbacks(releaseEditFocusAnchor)
+        dismissMentionSuggestions()
         fullscreenImageDialog?.dismiss()
         fullscreenImageDialog = null
         fullscreenVideoDialog?.dismiss()
@@ -326,6 +338,7 @@ class MainActivity : ComponentActivity() {
         messageInput.doAfterTextChanged {
             viewModel.updateEditDraft(it?.toString().orEmpty())
             updateComposerButtons()
+            renderMentionSuggestions()
         }
         cancelEditButton.setOnClickListener { viewModel.cancelEdit() }
         findViewById<ImageButton>(R.id.settingsButton).setOnClickListener {
@@ -382,6 +395,83 @@ class MainActivity : ComponentActivity() {
                 }
                 .show()
         }
+    }
+
+    private fun configureMentionAutocomplete() {
+        mentionSuggestionAdapter = MentionSuggestionAdapter(this)
+        mentionSuggestions = ListPopupWindow(this).apply {
+            anchorView = messageInput
+            setAdapter(mentionSuggestionAdapter)
+            setBackgroundDrawable(
+                ContextCompat.getDrawable(
+                    this@MainActivity,
+                    R.drawable.mention_suggestions_background,
+                ),
+            )
+            setDropDownGravity(Gravity.START)
+            inputMethodMode = PopupWindow.INPUT_METHOD_NEEDED
+            isModal = false
+            setOnItemClickListener { _, _, position, _ ->
+                insertMention(mentionSuggestionAdapter.getItem(position))
+            }
+        }
+        messageInput.setOnFocusChangeListener { _, hasFocus ->
+            if (hasFocus) renderMentionSuggestions() else dismissMentionSuggestions()
+        }
+    }
+
+    private fun renderMentionSuggestions() {
+        if (
+            !::mentionSuggestions.isInitialized ||
+            !messageInput.hasFocus() ||
+            messageInput.selectionStart != messageInput.selectionEnd
+        ) {
+            dismissMentionSuggestions()
+            return
+        }
+        val mention = MentionAutocomplete.activeMention(
+            messageInput.text,
+            messageInput.selectionStart,
+        )
+        if (mention == null) {
+            dismissMentionSuggestions()
+            return
+        }
+        val suggestions = MentionAutocomplete.suggestions(channelUsers, mention.query)
+        if (suggestions.isEmpty()) {
+            dismissMentionSuggestions()
+            return
+        }
+        mentionSuggestionAdapter.submit(suggestions)
+        val density = resources.displayMetrics.density
+        mentionSuggestions.width = messageInput.width
+        mentionSuggestions.height = (MENTION_ROW_HEIGHT_DP * density * minOf(
+            suggestions.size,
+            MAX_VISIBLE_MENTION_SUGGESTIONS,
+        )).toInt()
+        if (messageInput.width == 0) {
+            messageInput.post(::renderMentionSuggestions)
+        } else {
+            mentionSuggestions.show()
+        }
+    }
+
+    private fun insertMention(user: MattermostUser) {
+        val selection = messageInput.selectionStart
+        val mention = MentionAutocomplete.activeMention(messageInput.text, selection)
+        if (mention == null) {
+            dismissMentionSuggestions()
+            return
+        }
+        val insertion = MentionAutocomplete.insert(messageInput.text, mention, user.username)
+        messageInput.setText(insertion.text)
+        messageInput.setSelection(insertion.cursor)
+        messageInput.requestFocus()
+        dismissMentionSuggestions()
+    }
+
+    private fun dismissMentionSuggestions() {
+        if (::mentionSuggestions.isInitialized) mentionSuggestions.dismiss()
     }
 
     private fun setAttachmentActionsVisible(visible: Boolean) {
@@ -538,6 +628,12 @@ class MainActivity : ComponentActivity() {
                 launch { viewModel.connectionState.collect(::renderConnection) }
                 launch { viewModel.userPresence.collect(adapter::updatePresence) }
                 launch { viewModel.mentionContext.collect(adapter::updateMentionContext) }
+                launch {
+                    viewModel.channelUsers.collect {
+                        channelUsers = it
+                        renderMentionSuggestions()
+                    }
+                }
                 launch { viewModel.refreshing.collect { latestProgress.isVisible = it } }
                 launch { viewModel.messageEdit.collect(::renderMessageEdit) }
                 launch { viewModel.composer.collect(::renderComposer) }
@@ -662,12 +758,14 @@ class MainActivity : ComponentActivity() {
     private fun renderScreen(state: ScreenState) {
         when (state) {
             ScreenState.Loading -> {
+                dismissMentionSuggestions()
                 setupPanel.isVisible = true
                 channelPanel.isVisible = false
                 setSetupEnabled(false)
                 setupProgress.isVisible = true
             }
             is ScreenState.Setup -> {
+                dismissMentionSuggestions()
                 setupPanel.isVisible = true
                 channelPanel.isVisible = false
                 setSetupEnabled(!state.connecting)
@@ -1308,5 +1406,7 @@ class MainActivity : ComponentActivity() {
         const val STATE_CAPTURE_URI = "capture_uri"
         const val MAX_ATTACHMENTS = 10
         const val ATTACHMENT_ANIMATION_MS = 180L
+        const val MENTION_ROW_HEIGHT_DP = 56
+        const val MAX_VISIBLE_MENTION_SUGGESTIONS = 5
     }
 }

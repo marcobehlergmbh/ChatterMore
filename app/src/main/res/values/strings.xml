@@ -36,6 +36,7 @@
     <string name="change_connection">Change connection</string>
     <string name="clear_connection_prompt">Clear the saved connection and return to setup?</string>
     <string name="message_hint">Message</string>
+    <string name="mention_user_suggestion">@%1$s, %2$s</string>
     <string name="connecting">Connecting</string>
     <string name="connected">Connected</string>
     <string name="offline">Offline</string>

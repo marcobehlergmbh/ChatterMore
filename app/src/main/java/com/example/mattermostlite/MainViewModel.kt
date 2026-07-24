@@ -102,6 +102,7 @@ class MainViewModel(
     val refreshing: StateFlow<Boolean> = repository.refreshing
     val userPresence = repository.userPresence
     val mentionContext = repository.mentionContext
+    val channelUsers = repository.channelUsers
 
     init {
         viewModelScope.launch {

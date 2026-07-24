@@ -59,6 +59,7 @@ class ChannelRepository(
     private val _uploadCapabilities = MutableStateFlow(UploadCapabilities())
     private val _userPresence = MutableStateFlow<Map<String, UserPresence>>(emptyMap())
     private val _mentionContext = MutableStateFlow(MentionContext())
+    private val _channelUsers = MutableStateFlow<List<MattermostUser>>(emptyList())
 
     val mutations: SharedFlow<FeedMutation> = _mutations.asSharedFlow()
     val connectionState: StateFlow<ConnectionState> = _connectionState.asStateFlow()
@@ -66,6 +67,7 @@ class ChannelRepository(
     val uploadCapabilities: StateFlow<UploadCapabilities> = _uploadCapabilities.asStateFlow()
     val userPresence: StateFlow<Map<String, UserPresence>> = _userPresence.asStateFlow()
     val mentionContext: StateFlow<MentionContext> = _mentionContext.asStateFlow()
+    val channelUsers: StateFlow<List<MattermostUser>> = _channelUsers.asStateFlow()
 
     private lateinit var config: AuthenticatedServerConfig
     private lateinit var channel: MattermostChannel
@@ -82,6 +84,7 @@ class ChannelRepository(
     private val negativeMentionUsernames = mutableSetOf<String>()
     private val inFlightMentionUsernames = mutableSetOf<String>()
     private var mentionGeneration = 0
+    private var channelUsersGeneration = 0
 
     suspend fun initialize(
         rawConfig: ServerConfig,
@@ -93,12 +96,16 @@ class ChannelRepository(
         olderExhausted = false
         presenceStore.clear()
         _userPresence.value = emptyMap()
+        _channelUsers.value = emptyList()
+        channelUsersGeneration++
+        val usersGeneration = channelUsersGeneration
         _uploadCapabilities.value = UploadCapabilities()
         clearMentionContext()
         val (authenticatedConfig, authenticatedUser) = api.login(rawConfig)
         config = authenticatedConfig
         currentUser = authenticatedUser
         resetMentionContext(authenticatedUser)
+        _channelUsers.value = listOf(authenticatedUser)
         channel = api.resolveChannel(config)
         _uploadCapabilities.value = runCatching { api.uploadCapabilities(config) }
             .getOrDefault(UploadCapabilities())
@@ -113,6 +120,9 @@ class ChannelRepository(
         val mutation = feedMutex.withLock { feed.replace(posts, profiles + currentUser) }
         _mutations.emit(mutation)
         scheduleMentionResolution(posts)
+        scope.launch {
+            loadChannelUsers(usersGeneration, config, channel.id, currentUser)
+        }
         return Triple(channel, currentUser, config)
     }
 
@@ -262,8 +272,10 @@ class ChannelRepository(
         stopSocket()
         initialized = false
         presenceGeneration++
+        channelUsersGeneration++
         presenceStore.clear()
         _userPresence.value = emptyMap()
+        _channelUsers.value = emptyList()
         scope.launch { clearMentionContext() }
     }
 
@@ -511,6 +523,32 @@ class ChannelRepository(
                 }
             }
             publishMentionContext()
+        }
+    }
+
+    private suspend fun loadChannelUsers(
+        generation: Int,
+        requestConfig: AuthenticatedServerConfig,
+        channelId: String,
+        authenticatedUser: MattermostUser,
+    ) {
+        val users = runCatching {
+            api.usersInChannel(requestConfig, channelId)
+        }.getOrNull() ?: return
+        val sortedUsers = (users + authenticatedUser).asSequence()
+            .filter { it.username.isNotBlank() }
+            .distinctBy { it.username.lowercase(Locale.ROOT) }
+            .sortedBy { it.username.lowercase(Locale.ROOT) }
+            .toList()
+        mentionMutex.withLock {
+            if (generation != channelUsersGeneration) return
+            sortedUsers.forEach { user ->
+                val username = user.username.lowercase(Locale.ROOT)
+                mentionUsersByUsername[username] = user
+                negativeMentionUsernames.remove(username)
+            }
+            publishMentionContext()
+            _channelUsers.value = sortedUsers
         }
     }
 

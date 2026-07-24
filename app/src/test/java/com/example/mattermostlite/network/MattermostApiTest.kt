@@ -186,6 +186,54 @@ class MattermostApiTest {
     }
 
     @Test
+    fun `loads every active user in a channel using paginated requests`() = runBlocking {
+        val requestedPages = mutableListOf<String?>()
+        val requestedChannels = mutableListOf<String?>()
+        val requestedPageSizes = mutableListOf<String?>()
+        val requestedActiveFilters = mutableListOf<String?>()
+        val client = OkHttpClient.Builder()
+            .addInterceptor { chain ->
+                val request = chain.request()
+                requestedPages += request.url.queryParameter("page")
+                requestedChannels += request.url.queryParameter("in_channel")
+                requestedPageSizes += request.url.queryParameter("per_page")
+                requestedActiveFilters += request.url.queryParameter("active")
+                val page = request.url.queryParameter("page")?.toInt()
+                val body = if (page == 0) {
+                    (0 until 200).joinToString(prefix = "[", postfix = "]") {
+                        """{"id":"user-$it","username":"user$it"}"""
+                    }
+                } else {
+                    """[{"id":"user-200","username":"user200"}]"""
+                }
+                Response.Builder()
+                    .request(request)
+                    .protocol(Protocol.HTTP_1_1)
+                    .code(200)
+                    .message("OK")
+                    .body(body.toResponseBody(JSON_MEDIA_TYPE))
+                    .build()
+            }
+            .build()
+        val api = MattermostApi(client)
+        val session = AuthenticatedServerConfig(
+            baseUrl = "https://mattermost.example.com",
+            teamName = "engineering",
+            channelName = "town-square",
+            token = "session-token",
+        )
+
+        val users = api.usersInChannel(session, "channel-1")
+
+        assertEquals(201, users.size)
+        assertEquals("user200", users.last().username)
+        assertEquals(listOf("0", "1"), requestedPages)
+        assertEquals(listOf("channel-1", "channel-1"), requestedChannels)
+        assertEquals(listOf("200", "200"), requestedPageSizes)
+        assertEquals(listOf("true", "true"), requestedActiveFilters)
+    }
+
+    @Test
     fun `loads upload capabilities and uploads multipart file`() = runBlocking {
         val requests = mutableListOf<CapturedRequest>()
         val client = OkHttpClient.Builder()
