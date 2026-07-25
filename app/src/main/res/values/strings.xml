@@ -45,6 +45,8 @@
     <string name="send_failed">Failed. Tap to retry.</string>
     <string name="unsupported_message">Unsupported message</string>
     <string name="new_messages">New messages</string>
+    <string name="today">Today</string>
+    <string name="yesterday">Yesterday</string>
     <string name="mentions_you">Mentions you</string>
     <string name="channel_wide_mention">Channel-wide mention</string>
     <string name="online_members_mention">Online members mention</string>

@@ -39,6 +39,7 @@ import com.example.mattermostlite.model.MattermostUser
 import com.example.mattermostlite.model.UserPresence
 import com.example.mattermostlite.network.MattermostImageLoader
 import java.time.Instant
+import java.time.LocalDate
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 
@@ -57,9 +58,13 @@ class FeedAdapter(
     private val positions = mutableMapOf<String, Int>()
     private val avatarPositionsByUserId = mutableMapOf<String, MutableList<Int>>()
     private val presenceByUserId = mutableMapOf<String, UserPresence>()
+    private val zoneId = ZoneId.systemDefault()
     private val timeFormatter = DateTimeFormatter.ofPattern("HH:mm")
-        .withZone(ZoneId.systemDefault())
+        .withZone(zoneId)
+    private val dayFormatter = DateTimeFormatter.ofPattern("EEE, MMM d")
     private val timeLabels = LruCache<Long, String>(2_048)
+    private val localDays = LruCache<Long, Long>(2_048)
+    private val dateLabels = LruCache<Long, String>(512)
     private val formattedMessages = object : LruCache<String, RenderedMessage>(LINK_CACHE_CHARACTERS) {
         override fun sizeOf(key: String, value: RenderedMessage): Int =
             (key.length + value.text.length).coerceAtLeast(1)
@@ -91,11 +96,23 @@ class FeedAdapter(
 
     override fun onBindViewHolder(holder: MessageViewHolder, position: Int) {
         val item = items[position]
+        val previous = items.getOrNull(position - 1)
         val next = items.getOrNull(position + 1)
+        val currentDay = localDay(item.createAt)
+        val previousDay = previous?.let { localDay(it.createAt) }
         holder.bind(
             item = item,
-            isContinuation = MessageGrouping.isContinuation(items.getOrNull(position - 1), item),
-            isGroupEnd = next == null || !MessageGrouping.isContinuation(item, next),
+            isContinuation = MessageGrouping.isContinuation(
+                previous,
+                item,
+                sameLocalDay = previousDay == currentDay,
+            ),
+            isGroupEnd = next == null || !MessageGrouping.isContinuation(
+                item,
+                next,
+                sameLocalDay = currentDay == localDay(next.createAt),
+            ),
+            dividerDay = currentDay.takeIf { MessageGrouping.startsNewDay(previousDay, it) },
         )
     }
 
@@ -108,7 +125,7 @@ class FeedAdapter(
             val item = items[position]
             holder.bindPresence(
                 item = item,
-                isContinuation = MessageGrouping.isContinuation(items.getOrNull(position - 1), item),
+                isContinuation = isContinuation(items.getOrNull(position - 1), item),
             )
         } else {
             super.onBindViewHolder(holder, position, payloads)
@@ -201,6 +218,29 @@ class FeedAdapter(
     fun positionOfServerId(serverId: String): Int =
         items.indexOfFirst { it.serverId == serverId }
 
+    private fun isContinuation(previous: FeedItem?, current: FeedItem): Boolean =
+        MessageGrouping.isContinuation(
+            previous = previous,
+            current = current,
+            sameLocalDay = previous != null &&
+                localDay(previous.createAt) == localDay(current.createAt),
+        )
+
+    private fun localDay(timestamp: Long): Long =
+        localDays.get(timestamp) ?: MessageGrouping.localDay(timestamp, zoneId)
+            .also { localDays.put(timestamp, it) }
+
+    private fun dayLabel(epochDay: Long, context: Context): String {
+        val date = LocalDate.ofEpochDay(epochDay)
+        val today = LocalDate.now(zoneId)
+        return when (date) {
+            today -> context.getString(R.string.today)
+            today.minusDays(1) -> context.getString(R.string.yesterday)
+            else -> dateLabels.get(epochDay) ?: dayFormatter.format(date)
+                .also { dateLabels.put(epochDay, it) }
+        }
+    }
+
     private fun rebuildPositions(start: Int = 0) {
         if (start == 0) positions.clear()
         for (index in start until items.size) positions[items[index].key] = index
@@ -210,7 +250,7 @@ class FeedAdapter(
     private fun rebuildUserPositions() {
         avatarPositionsByUserId.clear()
         items.forEachIndexed { index, item ->
-            if (!MessageGrouping.isContinuation(items.getOrNull(index - 1), item)) {
+            if (!isContinuation(items.getOrNull(index - 1), item)) {
                 avatarPositionsByUserId.getOrPut(item.userId) { mutableListOf() }.add(index)
             }
         }
@@ -218,6 +258,9 @@ class FeedAdapter(
 
     inner class MessageViewHolder(view: View) : RecyclerView.ViewHolder(view) {
         private val attentionBar = view.findViewById<View>(R.id.messageAttentionBar)
+        private val dayDivider = view.findViewById<View>(R.id.messageDayDivider)
+        private val dayDividerLabel = view.findViewById<TextView>(R.id.messageDayDividerLabel)
+        private val row = view.findViewById<View>(R.id.messageRow)
         private val content = view.findViewById<View>(R.id.messageContent)
         private val header = view.findViewById<View>(R.id.messageHeader)
         private val avatar = view.findViewById<ImageView>(R.id.messageAvatar)
@@ -242,7 +285,7 @@ class FeedAdapter(
         private var files: MessageFileListView? = null
         private val state = view.findViewById<TextView>(R.id.messageState)
         private val bodyPaintFlags = body.paintFlags
-        private val horizontalPadding = view.paddingLeft
+        private val horizontalPadding = row.paddingLeft
         private val groupVerticalSpacing = view.resources.getDimensionPixelSize(
             R.dimen.message_group_vertical_spacing,
         )
@@ -277,10 +320,17 @@ class FeedAdapter(
             avatar.setOnClickListener { openBoundUser() }
         }
 
-        fun bind(item: FeedItem, isContinuation: Boolean, isGroupEnd: Boolean) {
+        fun bind(
+            item: FeedItem,
+            isContinuation: Boolean,
+            isGroupEnd: Boolean,
+            dividerDay: Long?,
+        ) {
             resetTapGlow()
             clickableUserId = item.userId
             clickableUserTitle = item.author
+            dayDivider.visibility = if (dividerDay == null) View.GONE else View.VISIBLE
+            dayDividerLabel.text = dividerDay?.let { dayLabel(it, itemView.context) }
             if (boundAsContinuation != isContinuation || boundAsGroupEnd != isGroupEnd) {
                 boundAsContinuation = isContinuation
                 boundAsGroupEnd = isGroupEnd
@@ -288,8 +338,8 @@ class FeedAdapter(
                 avatar.visibility = if (isContinuation) View.GONE else View.VISIBLE
                 val topPadding = if (isContinuation) innerVerticalSpacing else groupVerticalSpacing
                 val bottomPadding = if (isGroupEnd) groupVerticalSpacing else innerVerticalSpacing
-                itemView.minimumHeight = if (isContinuation) 0 else groupMinHeight
-                itemView.setPadding(horizontalPadding, topPadding, horizontalPadding, bottomPadding)
+                row.minimumHeight = if (isContinuation) 0 else groupMinHeight
+                row.setPadding(horizontalPadding, topPadding, horizontalPadding, bottomPadding)
             }
             if (!isContinuation) {
                 author.text = item.author
