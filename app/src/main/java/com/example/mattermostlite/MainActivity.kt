@@ -113,6 +113,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var connectButton: Button
     private lateinit var setupProgress: ProgressBar
     private lateinit var setupError: TextView
+    private lateinit var conversationBackButton: ImageButton
     private lateinit var channelTitle: TextView
     private lateinit var connectionStatus: TextView
     private lateinit var messageList: RecyclerView
@@ -149,6 +150,11 @@ class MainActivity : ComponentActivity() {
             setAttachmentActionsVisible(false)
         }
     }
+    private val conversationBackCallback = object : OnBackPressedCallback(false) {
+        override fun handleOnBackPressed() {
+            returnToConfiguredChannel()
+        }
+    }
     private val galleryLauncher = registerForActivityResult(
         ActivityResultContracts.PickMultipleVisualMedia(MAX_ATTACHMENTS),
     ) { uris ->
@@ -173,7 +179,8 @@ class MainActivity : ComponentActivity() {
         SunoPlaybackController(this, container.sunoResolver, lifecycleScope)
     }
 
-    private var loadedChannel = false
+    private var renderedConversationId: String? = null
+    private var conversationLoading = false
     private var pendingScrollAnchor: MessageScrollAnchor? = null
     private var lastBottomRefreshAt = 0L
     private var imeVisible = false
@@ -188,6 +195,7 @@ class MainActivity : ComponentActivity() {
         WindowCompat.setDecorFitsSystemWindows(window, false)
         setContentView(R.layout.activity_main)
         bindViews()
+        onBackPressedDispatcher.addCallback(this, conversationBackCallback)
         onBackPressedDispatcher.addCallback(this, attachmentBackCallback)
         configureInsets()
         configureAttachmentComposer()
@@ -217,7 +225,10 @@ class MainActivity : ComponentActivity() {
     override fun onStart() {
         super.onStart()
         viewModel.setForeground(true)
-        if (loadedChannel && viewModel.screen.value is ScreenState.Channel) {
+        if (
+            renderedConversationId != null &&
+            (viewModel.screen.value as? ScreenState.Conversation)?.loading == false
+        ) {
             val anchor = pendingScrollAnchor ?: captureScrollAnchor()
             lifecycleScope.launch {
                 adapter.replace(viewModel.snapshot())
@@ -273,6 +284,7 @@ class MainActivity : ComponentActivity() {
         connectButton = findViewById(R.id.connectButton)
         setupProgress = findViewById(R.id.setupProgress)
         setupError = findViewById(R.id.setupError)
+        conversationBackButton = findViewById(R.id.conversationBackButton)
         channelTitle = findViewById(R.id.channelTitle)
         connectionStatus = findViewById(R.id.connectionStatus)
         messageList = findViewById(R.id.messageList)
@@ -341,6 +353,7 @@ class MainActivity : ComponentActivity() {
             renderMentionSuggestions()
         }
         cancelEditButton.setOnClickListener { viewModel.cancelEdit() }
+        conversationBackButton.setOnClickListener { returnToConfiguredChannel() }
         findViewById<ImageButton>(R.id.settingsButton).setOnClickListener {
             AlertDialog.Builder(this)
                 .setTitle(R.string.change_connection)
@@ -348,7 +361,9 @@ class MainActivity : ComponentActivity() {
                 .setNegativeButton(android.R.string.cancel, null)
                 .setPositiveButton(android.R.string.ok) { _, _ ->
                     adapter.replace(emptyList())
-                    loadedChannel = false
+                    renderedConversationId = null
+                    channelName.text.clear()
+                    password.text.clear()
                     viewModel.clearConnection()
                 }
                 .show()
@@ -541,6 +556,7 @@ class MainActivity : ComponentActivity() {
         layoutManager = LinearLayoutManager(this).apply { stackFromEnd = true }
         adapter = FeedAdapter(
             onRetry = viewModel::retry,
+            onUserClick = ::openDirectMessage,
             onImageClick = ::showFullscreenImage,
             onFileClick = ::handleFileClick,
             onYouTubeClick = ::openYouTubeVideo,
@@ -634,7 +650,11 @@ class MainActivity : ComponentActivity() {
                         renderMentionSuggestions()
                     }
                 }
-                launch { viewModel.refreshing.collect { latestProgress.isVisible = it } }
+                launch {
+                    viewModel.refreshing.collect {
+                        latestProgress.isVisible = it || conversationLoading
+                    }
+                }
                 launch { viewModel.messageEdit.collect(::renderMessageEdit) }
                 launch { viewModel.composer.collect(::renderComposer) }
                 launch {
@@ -659,6 +679,26 @@ class MainActivity : ComponentActivity() {
         }
         scheduleEditFocusRelease()
         return true
+    }
+
+    private fun openDirectMessage(userId: String, title: String) {
+        val current = viewModel.screen.value as? ScreenState.Conversation ?: return
+        if (!current.loading && current.peerUserId == userId) return
+        dismissMentionSuggestions()
+        setAttachmentActionsVisible(false)
+        pendingScrollAnchor = null
+        normalDraftAfterEdit = null
+        messageInput.text.clear()
+        viewModel.openDirectMessage(userId, title)
+    }
+
+    private fun returnToConfiguredChannel() {
+        dismissMentionSuggestions()
+        setAttachmentActionsVisible(false)
+        pendingScrollAnchor = null
+        normalDraftAfterEdit = null
+        messageInput.text.clear()
+        viewModel.returnToConfiguredChannel()
     }
 
     private fun submitMessageEdit(message: String) {
@@ -745,6 +785,12 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun updateComposerButtons() {
+        val conversation = viewModel.screen.value as? ScreenState.Conversation
+        if (conversation == null || conversation.loading) {
+            sendButton.isEnabled = false
+            attachmentButton.isEnabled = false
+            return
+        }
         val edit = viewModel.messageEdit.value
         if (edit != null) {
             sendButton.isEnabled = !edit.submitting
@@ -758,6 +804,8 @@ class MainActivity : ComponentActivity() {
     private fun renderScreen(state: ScreenState) {
         when (state) {
             ScreenState.Loading -> {
+                conversationLoading = false
+                conversationBackCallback.isEnabled = false
                 dismissMentionSuggestions()
                 setupPanel.isVisible = true
                 channelPanel.isVisible = false
@@ -765,6 +813,8 @@ class MainActivity : ComponentActivity() {
                 setupProgress.isVisible = true
             }
             is ScreenState.Setup -> {
+                conversationLoading = false
+                conversationBackCallback.isEnabled = false
                 dismissMentionSuggestions()
                 setupPanel.isVisible = true
                 channelPanel.isVisible = false
@@ -774,12 +824,19 @@ class MainActivity : ComponentActivity() {
                 setupError.text = state.error.orEmpty()
                 state.config?.let(::populateSetup)
             }
-            is ScreenState.Channel -> {
+            is ScreenState.Conversation -> {
                 setupPanel.isVisible = false
                 channelPanel.isVisible = true
                 channelTitle.text = state.title
-                if (!loadedChannel) {
-                    loadedChannel = true
+                conversationLoading = state.loading
+                conversationBackButton.isVisible = state.canNavigateBack
+                conversationBackButton.isEnabled = state.canNavigateBack
+                conversationBackCallback.isEnabled = state.canNavigateBack
+                messageList.isVisible = !state.loading
+                latestProgress.isVisible = state.loading || viewModel.refreshing.value
+                updateComposerButtons()
+                if (!state.loading && renderedConversationId != state.id) {
+                    renderedConversationId = state.id
                     val anchor = pendingScrollAnchor
                     lifecycleScope.launch {
                         adapter.replace(viewModel.snapshot())
@@ -808,7 +865,8 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun handleNextIncomingShare() {
-        if (viewModel.screen.value !is ScreenState.Channel || incomingShareDialog != null) return
+        val conversation = viewModel.screen.value as? ScreenState.Conversation
+        if (conversation == null || conversation.loading || incomingShareDialog != null) return
         if (viewModel.messageEdit.value?.submitting == true) return
         val share = viewModel.incomingShares.value.firstOrNull() ?: return
         val composer = viewModel.composer.value
@@ -882,6 +940,13 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun applyMutation(mutation: FeedMutation) {
+        if (mutation is FeedMutation.Replace && mutation.conversationId != null) {
+            adapter.replace(mutation.items)
+            renderedConversationId = mutation.conversationId
+            newMessagesButton.isVisible = false
+            messageList.post { scrollToBottom(smooth = false) }
+            return
+        }
         val wasNearBottom = isNearBottom()
         val firstPosition = layoutManager.findFirstVisibleItemPosition()
         val firstView = layoutManager.findViewByPosition(firstPosition)
@@ -1332,7 +1397,11 @@ class MainActivity : ComponentActivity() {
         if (teamName.text.isBlank()) teamName.setText(config.teamName)
         if (channelName.text.isBlank()) channelName.setText(config.channelName)
         if (username.text.isBlank()) username.setText(config.username)
-        if (password.text.isBlank()) password.setText(config.password)
+        if (config.password.isBlank()) {
+            password.text.clear()
+        } else if (password.text.isBlank()) {
+            password.setText(config.password)
+        }
     }
 
     private fun setSetupEnabled(enabled: Boolean) {

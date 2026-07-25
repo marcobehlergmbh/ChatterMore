@@ -153,6 +153,42 @@ class MattermostApiTest {
     }
 
     @Test
+    fun `gets or creates a direct channel for exactly two users`() = runBlocking {
+        var captured: CapturedRequest? = null
+        val client = OkHttpClient.Builder()
+            .addInterceptor { chain ->
+                val request = chain.request()
+                captured = request.capture()
+                Response.Builder()
+                    .request(request)
+                    .protocol(Protocol.HTTP_1_1)
+                    .code(201)
+                    .message("Created")
+                    .body(
+                        """{"id":"dm-channel","name":"user-1__user-2","display_name":""}"""
+                            .toResponseBody(JSON_MEDIA_TYPE),
+                    )
+                    .build()
+            }
+            .build()
+        val api = MattermostApi(client)
+        val session = AuthenticatedServerConfig(
+            baseUrl = "https://mattermost.example.com",
+            teamName = "engineering",
+            channelName = "town-square",
+            token = "session-token",
+        )
+
+        val channel = api.directChannel(session, "user-1", "user-2")
+
+        assertEquals("dm-channel", channel.id)
+        assertEquals("/api/v4/channels/direct", captured?.path)
+        assertEquals("POST", captured?.method)
+        assertEquals("Bearer session-token", captured?.authorization)
+        assertEquals("[\"user-1\",\"user-2\"]", captured?.body)
+    }
+
+    @Test
     fun `resolves mention usernames in one authenticated request`() = runBlocking {
         var captured: CapturedRequest? = null
         val client = OkHttpClient.Builder()

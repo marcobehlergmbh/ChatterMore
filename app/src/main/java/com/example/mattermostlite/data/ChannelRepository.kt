@@ -2,6 +2,7 @@ package com.example.mattermostlite.data
 
 import com.example.mattermostlite.model.ConnectionState
 import com.example.mattermostlite.model.AuthenticatedServerConfig
+import com.example.mattermostlite.model.Conversation
 import com.example.mattermostlite.model.DeliveryState
 import com.example.mattermostlite.model.FeedItem
 import com.example.mattermostlite.model.FeedMutation
@@ -20,6 +21,7 @@ import com.example.mattermostlite.network.MattermostSocket
 import com.example.mattermostlite.ui.MessageLinkParser
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -37,6 +39,8 @@ import kotlinx.coroutines.withTimeoutOrNull
 import java.io.IOException
 import java.util.UUID
 import java.util.Locale
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicBoolean
 import okhttp3.RequestBody
 import kotlin.math.min
 import kotlin.random.Random
@@ -70,8 +74,12 @@ class ChannelRepository(
     val channelUsers: StateFlow<List<MattermostUser>> = _channelUsers.asStateFlow()
 
     private lateinit var config: AuthenticatedServerConfig
-    private lateinit var channel: MattermostChannel
+    private lateinit var configuredConversation: Conversation.ConfiguredChannel
+    private lateinit var activeConversation: Conversation
     private lateinit var currentUser: MattermostUser
+    private var activeConversationGeneration = 0
+    private val conversationGeneration = AtomicInteger()
+    private val postArrivedDuringConversationSwitch = AtomicBoolean()
     private var initialized = false
     private var foreground = false
     private var olderExhausted = false
@@ -83,6 +91,7 @@ class ChannelRepository(
     private val mentionUsersByUsername = mutableMapOf<String, MattermostUser>()
     private val negativeMentionUsernames = mutableSetOf<String>()
     private val inFlightMentionUsernames = mutableSetOf<String>()
+    private val knownUsersById = mutableMapOf<String, MattermostUser>()
     private var mentionGeneration = 0
     private var channelUsersGeneration = 0
 
@@ -91,6 +100,8 @@ class ChannelRepository(
     ): Triple<MattermostChannel, MattermostUser, AuthenticatedServerConfig> {
         stopSocket()
         initialized = false
+        val conversationRequest = conversationGeneration.incrementAndGet()
+        postArrivedDuringConversationSwitch.set(false)
         presenceGeneration++
         socketCursor = null
         olderExhausted = false
@@ -106,24 +117,70 @@ class ChannelRepository(
         currentUser = authenticatedUser
         resetMentionContext(authenticatedUser)
         _channelUsers.value = listOf(authenticatedUser)
-        channel = api.resolveChannel(config)
+        val configuredChannel = api.resolveChannel(config)
+        configuredConversation = Conversation.ConfiguredChannel(configuredChannel)
         _uploadCapabilities.value = runCatching { api.uploadCapabilities(config) }
             .getOrDefault(UploadCapabilities())
         initialized = true
         if (foreground) startSocket()
         withTimeoutOrNull(3_000) { socketReady.await() }
 
-        val page = api.posts(config, channel.id)
+        val page = api.posts(config, configuredConversation.channelId)
         val posts = page.orderedPosts
         val profiles = fetchProfiles(posts)
         refreshPresence(posts.map(MattermostPost::userId) + currentUser.id)
-        val mutation = feedMutex.withLock { feed.replace(posts, profiles + currentUser) }
-        _mutations.emit(mutation)
+        feedMutex.withLock {
+            if (conversationRequest != conversationGeneration.get()) {
+                throw CancellationException("Connection was replaced")
+            }
+            activeConversation = configuredConversation
+            activeConversationGeneration = conversationRequest
+            val mutation = feed.replace(posts, profiles + currentUser).copy(
+                conversationId = configuredConversation.channelId,
+            )
+            _mutations.emit(mutation)
+        }
+        if (postArrivedDuringConversationSwitch.getAndSet(false)) {
+            scope.launch { refreshHeadSafely() }
+        }
         scheduleMentionResolution(posts)
         scope.launch {
-            loadChannelUsers(usersGeneration, config, channel.id, currentUser)
+            loadChannelUsers(
+                usersGeneration,
+                config,
+                configuredConversation.channelId,
+                currentUser,
+            )
         }
-        return Triple(channel, currentUser, config)
+        return Triple(configuredChannel, currentUser, config)
+    }
+
+    suspend fun openDirectMessage(userId: String): Conversation.DirectMessage? {
+        if (!initialized || userId.isBlank()) return null
+        activeToken()?.conversation
+            ?.let { it as? Conversation.DirectMessage }
+            ?.takeIf { it.peer.id == userId }
+            ?.let { return it }
+
+        val generation = conversationGeneration.incrementAndGet()
+        return switchConversation(generation) {
+            val peer = knownUser(userId)
+                ?: api.users(config, listOf(userId)).singleOrNull()
+                ?: throw IllegalArgumentException("The selected user could not be found.")
+            addMentionUsers(listOf(peer))
+            val directChannel = api.directChannel(config, currentUser.id, peer.id)
+            Conversation.DirectMessage(directChannel, peer)
+        } as? Conversation.DirectMessage
+    }
+
+    suspend fun returnToConfiguredChannel(): Conversation.ConfiguredChannel? {
+        if (!initialized) return null
+        activeToken()?.conversation
+            ?.takeIf { it is Conversation.ConfiguredChannel }
+            ?.let { return it as Conversation.ConfiguredChannel }
+        val generation = conversationGeneration.incrementAndGet()
+        return switchConversation(generation) { configuredConversation }
+            as? Conversation.ConfiguredChannel
     }
 
     fun setForeground(value: Boolean) {
@@ -136,19 +193,23 @@ class ChannelRepository(
     suspend fun loadOlder() {
         if (olderExhausted || !olderMutex.tryLock()) return
         try {
+            val token = activeToken() ?: return
             val visibleCursor = feedMutex.withLock { feed.oldestServerId() } ?: return
             var requestCursor = visibleCursor
             repeat(MAX_HISTORY_SCAN_PAGES) {
-                val page = api.posts(config, channel.id, before = requestCursor)
+                val page = api.posts(config, token.conversation.channelId, before = requestCursor)
+                if (!isActive(token)) return
                 val posts = page.orderedPosts
                 if (posts.isEmpty()) {
-                    olderExhausted = true
+                    if (isActive(token)) olderExhausted = true
                     return
                 }
                 val profiles = fetchProfiles(posts)
-                val (mutations, newVisibleCursor) = feedMutex.withLock {
+                val result = feedMutex.withLock {
+                    if (!isActiveLocked(token)) return@withLock null
                     feed.mergeOlder(posts, profiles) to feed.oldestServerId()
-                }
+                } ?: return
+                val (mutations, newVisibleCursor) = result
                 if (newVisibleCursor != visibleCursor) {
                     emitAll(mutations)
                     scheduleMentionResolution(posts)
@@ -159,7 +220,7 @@ class ChannelRepository(
                 // A page may contain only thread replies, which this single-channel feed hides.
                 val nextRequestCursor = posts.minWithOrNull(POST_ORDER)?.id
                 if (nextRequestCursor.isNullOrBlank() || nextRequestCursor == requestCursor) {
-                    olderExhausted = true
+                    if (isActive(token)) olderExhausted = true
                     return
                 }
                 requestCursor = nextRequestCursor
@@ -173,6 +234,7 @@ class ChannelRepository(
         if (!initialized || !refreshMutex.tryLock()) return
         _refreshing.value = true
         try {
+            val token = activeToken() ?: return
             var cursor = feedMutex.withLock { feed.newestServerId() }
             val seenCursors = mutableSetOf<String>()
             var pages = 0
@@ -180,10 +242,19 @@ class ChannelRepository(
                 while (pages++ < MAX_REFRESH_PAGES) {
                     val currentCursor = cursor ?: break
                     if (!seenCursors.add(currentCursor)) break
-                    val page = api.posts(config, channel.id, after = currentCursor)
+                    val page = api.posts(
+                        config,
+                        token.conversation.channelId,
+                        after = currentCursor,
+                    )
+                    if (!isActive(token)) return
                     val posts = page.orderedPosts
                     val profiles = fetchProfiles(posts)
-                    emitAll(feedMutex.withLock { feed.merge(posts, profiles) })
+                    val mutations = feedMutex.withLock {
+                        if (!isActiveLocked(token)) return@withLock null
+                        feed.merge(posts, profiles)
+                    } ?: return
+                    emitAll(mutations)
                     scheduleMentionResolution(posts)
                     ensurePresence(posts.map(MattermostPost::userId))
                     val next = posts.maxWithOrNull(POST_ORDER)?.id
@@ -193,9 +264,14 @@ class ChannelRepository(
             }
 
             // Overlap the head page so a stale or deleted cursor cannot leave a gap.
-            val head = api.posts(config, channel.id)
+            val head = api.posts(config, token.conversation.channelId)
+            if (!isActive(token)) return
             val profiles = fetchProfiles(head.orderedPosts)
-            emitAll(feedMutex.withLock { feed.merge(head.orderedPosts, profiles) })
+            val mutations = feedMutex.withLock {
+                if (!isActiveLocked(token)) return@withLock null
+                feed.merge(head.orderedPosts, profiles)
+            } ?: return
+            emitAll(mutations)
             scheduleMentionResolution(head.orderedPosts)
             ensurePresence(head.orderedPosts.map(MattermostPost::userId))
         } finally {
@@ -210,23 +286,28 @@ class ChannelRepository(
         body: RequestBody,
         onProgress: (bytesWritten: Long, totalBytes: Long?) -> Unit,
         onBodyComplete: () -> Unit,
-    ): MattermostFile = api.uploadFile(
-        config,
-        channel.id,
-        fileName,
-        clientId,
-        body,
-        onProgress,
-        onBodyComplete,
-    )
+    ): MattermostFile {
+        val token = activeToken() ?: throw CancellationException("No active conversation")
+        return api.uploadFile(
+            config,
+            token.conversation.channelId,
+            fileName,
+            clientId,
+            body,
+            onProgress,
+            onBodyComplete,
+        )
+    }
 
     suspend fun send(message: String, uploadedFiles: List<MattermostFile> = emptyList()): Boolean {
         if (message.isBlank() && uploadedFiles.isEmpty()) return false
+        val token = activeToken() ?: return false
         val pendingId = UUID.randomUUID().toString()
         val mutation = feedMutex.withLock {
+            if (!isActiveLocked(token)) return false
             feed.addPending(
                 pendingId,
-                channel.id,
+                token.conversation.channelId,
                 currentUser,
                 message,
                 System.currentTimeMillis(),
@@ -234,13 +315,15 @@ class ChannelRepository(
             )
         }
         _mutations.emit(mutation)
-        scheduleUnconfirmed(pendingId)
-        return submitPending(pendingId, message, uploadedFiles.map(MattermostFile::id))
+        scheduleUnconfirmed(token, pendingId)
+        return submitPending(token, pendingId, message, uploadedFiles.map(MattermostFile::id))
     }
 
     suspend fun edit(postId: String, message: String): Boolean {
         if (message.isBlank()) return false
+        val token = activeToken() ?: return false
         val canEdit = feedMutex.withLock {
+            if (!isActiveLocked(token)) return@withLock false
             feed.post(postId)?.let { item ->
                 item.userId == currentUser.id && item.deliveryState == DeliveryState.SENT
             } == true
@@ -249,7 +332,11 @@ class ChannelRepository(
 
         return try {
             val post = api.patchPost(config, postId, message)
-            emitAll(feedMutex.withLock { feed.merge(listOf(post), listOf(currentUser)) })
+            val mutations = feedMutex.withLock {
+                if (!isActiveLocked(token)) return@withLock null
+                feed.merge(listOf(post), listOf(currentUser))
+            } ?: return true
+            emitAll(mutations)
             scheduleMentionResolution(listOf(post))
             true
         } catch (_: Exception) {
@@ -258,19 +345,23 @@ class ChannelRepository(
     }
 
     suspend fun retry(pendingId: String) {
+        val token = activeToken() ?: return
         val pending = feedMutex.withLock {
+            if (!isActiveLocked(token)) return
             val item = feed.pending(pendingId) ?: return
             val mutation = feed.setPendingState(pendingId, DeliveryState.OPTIMISTIC) ?: return
             Triple(mutation, item.message, item.fileIds)
         }
         _mutations.emit(pending.first)
-        scheduleUnconfirmed(pendingId)
-        submitPending(pendingId, pending.second, pending.third)
+        scheduleUnconfirmed(token, pendingId)
+        submitPending(token, pendingId, pending.second, pending.third)
     }
 
     fun close() {
         stopSocket()
         initialized = false
+        conversationGeneration.incrementAndGet()
+        postArrivedDuringConversationSwitch.set(false)
         presenceGeneration++
         channelUsersGeneration++
         presenceStore.clear()
@@ -280,27 +371,157 @@ class ChannelRepository(
     }
 
     private suspend fun submitPending(
+        token: ActiveToken,
         pendingId: String,
         message: String,
         fileIds: List<String>,
     ): Boolean = try {
-        val post = api.createPost(config, channel.id, message, pendingId, fileIds)
-        emitAll(feedMutex.withLock { feed.merge(listOf(post), listOf(currentUser)) })
-        scheduleMentionResolution(listOf(post))
+        val post = api.createPost(
+            config,
+            token.conversation.channelId,
+            message,
+            pendingId,
+            fileIds,
+        )
+        val mutations = feedMutex.withLock {
+            if (!isActiveLocked(token)) return@withLock null
+            feed.merge(listOf(post), listOf(currentUser))
+        }
+        if (mutations != null) {
+            emitAll(mutations)
+            scheduleMentionResolution(listOf(post))
+        }
         true
     } catch (error: Exception) {
-        feedMutex.withLock { feed.setPendingState(pendingId, DeliveryState.FAILED) }
+        feedMutex.withLock {
+            if (!isActiveLocked(token)) return@withLock null
+            feed.setPendingState(pendingId, DeliveryState.FAILED)
+        }
             ?.let { _mutations.emit(it) }
         false
     }
 
-    private fun scheduleUnconfirmed(pendingId: String) {
+    private fun scheduleUnconfirmed(token: ActiveToken, pendingId: String) {
         scope.launch {
             delay(UNCONFIRMED_GRACE_MS)
-            feedMutex.withLock { feed.markUnconfirmed(pendingId) }
+            feedMutex.withLock {
+                if (!isActiveLocked(token)) return@withLock null
+                feed.markUnconfirmed(pendingId)
+            }
                 ?.let { _mutations.emit(it) }
         }
     }
+
+    private suspend fun switchConversation(
+        generation: Int,
+        resolve: suspend () -> Conversation,
+    ): Conversation? {
+        channelUsersGeneration++
+        val usersGeneration = channelUsersGeneration
+        return try {
+            val target = resolve()
+            if (generation != conversationGeneration.get()) return null
+            val page = api.posts(config, target.channelId)
+            if (generation != conversationGeneration.get()) return null
+            val posts = page.orderedPosts
+            val profiles = fetchProfiles(posts)
+            if (generation != conversationGeneration.get()) return null
+
+            feedMutex.withLock {
+                if (generation != conversationGeneration.get()) return null
+                olderExhausted = false
+                activeConversation = target
+                activeConversationGeneration = generation
+                val mutation = feed.replace(posts, profiles + currentUser).copy(
+                    conversationId = target.channelId,
+                )
+                _mutations.emit(mutation)
+            }
+            scheduleMentionResolution(posts)
+            ensurePresence(posts.map(MattermostPost::userId) + currentUser.id)
+
+            when (target) {
+                is Conversation.ConfiguredChannel -> scope.launch {
+                    loadChannelUsers(
+                        usersGeneration,
+                        config,
+                        target.channelId,
+                        currentUser,
+                    )
+                }
+                is Conversation.DirectMessage -> {
+                    addMentionUsers(listOf(currentUser, target.peer))
+                    if (generation == conversationGeneration.get()) {
+                        _channelUsers.value = listOf(currentUser, target.peer)
+                            .distinctBy(MattermostUser::id)
+                            .sortedBy { it.username.lowercase(Locale.ROOT) }
+                    }
+                    ensurePresence(listOf(target.peer.id))
+                }
+            }
+            if (postArrivedDuringConversationSwitch.getAndSet(false)) {
+                scope.launch { refreshHeadSafely() }
+            }
+            target
+        } catch (error: Exception) {
+            restoreActiveConversationAfterFailedSwitch(generation)
+            throw error
+        }
+    }
+
+    private suspend fun restoreActiveConversationAfterFailedSwitch(generation: Int) {
+        var restored = false
+        feedMutex.withLock {
+            if (
+                generation == conversationGeneration.get() &&
+                ::activeConversation.isInitialized
+            ) {
+                activeConversationGeneration = generation
+                restored = true
+            }
+        }
+        if (restored && postArrivedDuringConversationSwitch.getAndSet(false)) {
+            scope.launch { refreshHeadSafely() }
+        }
+    }
+
+    private suspend fun activeToken(): ActiveToken? = feedMutex.withLock {
+        if (
+            !initialized ||
+            !::activeConversation.isInitialized ||
+            activeConversationGeneration != conversationGeneration.get()
+        ) {
+            null
+        } else {
+            ActiveToken(activeConversation, activeConversationGeneration)
+        }
+    }
+
+    private suspend fun activeTokenForSocketPost(): ActiveToken? = feedMutex.withLock {
+        if (
+            !initialized ||
+            !::activeConversation.isInitialized ||
+            activeConversationGeneration != conversationGeneration.get()
+        ) {
+            if (initialized) postArrivedDuringConversationSwitch.set(true)
+            null
+        } else {
+            ActiveToken(activeConversation, activeConversationGeneration)
+        }
+    }
+
+    private suspend fun isActive(token: ActiveToken): Boolean =
+        feedMutex.withLock { isActiveLocked(token) }
+
+    private fun isActiveLocked(token: ActiveToken): Boolean =
+        initialized &&
+            ::activeConversation.isInitialized &&
+            token.generation == conversationGeneration.get() &&
+            token.generation == activeConversationGeneration &&
+            token.conversation.channelId == activeConversation.channelId
+
+    private suspend fun knownUser(userId: String): MattermostUser? =
+        mentionMutex.withLock { knownUsersById[userId] }
 
     private fun startSocket() {
         if (socketJob?.isActive == true) return
@@ -360,11 +581,22 @@ class ChannelRepository(
     }
 
     private suspend fun handleSocketPost(signal: SocketSignal.PostEvent) {
-        if (signal.channelId != channel.id || signal.post.channelId != channel.id) return
-        val expected = socketCursor?.nextSequence
-        val sequenceGap = expected != null && signal.sequence != expected
-        socketCursor = socketCursor?.copy(nextSequence = signal.sequence + 1)
-        emitAll(feedMutex.withLock { feed.merge(listOf(signal.post)) })
+        val cursorUpdate = advanceSocketCursor(socketCursor, signal.sequence)
+        socketCursor = cursorUpdate.cursor
+        val token = activeTokenForSocketPost()
+        val matchesActiveConversation = token != null &&
+            signal.channelId == token.conversation.channelId &&
+            signal.post.channelId == token.conversation.channelId
+        if (!matchesActiveConversation) {
+            if (cursorUpdate.sequenceGap) scope.launch { refreshLatestSafely() }
+            return
+        }
+        token ?: return
+        val mutations = feedMutex.withLock {
+            if (!isActiveLocked(token)) return@withLock null
+            feed.merge(listOf(signal.post))
+        } ?: return
+        emitAll(mutations)
         scheduleMentionResolution(listOf(signal.post))
 
         if (signal.post.fileIds.isNotEmpty() && signal.post.files.isEmpty() && signal.post.deleteAt == 0L) {
@@ -374,7 +606,7 @@ class ChannelRepository(
                     ?.let { files ->
                         emitAll(
                             feedMutex.withLock {
-                                if (feed.isCurrent(signal.post)) {
+                                if (isActiveLocked(token) && feed.isCurrent(signal.post)) {
                                     feed.merge(listOf(signal.post.copy(files = files)))
                                 } else {
                                     emptyList()
@@ -390,12 +622,16 @@ class ChannelRepository(
             scope.launch {
                 runCatching { api.users(config, missing) }.getOrNull()?.let { profiles ->
                     addMentionUsers(profiles)
-                    emitAll(feedMutex.withLock { feed.updateProfiles(profiles) })
+                    val profileMutations = feedMutex.withLock {
+                        if (!isActiveLocked(token)) return@withLock null
+                        feed.updateProfiles(profiles)
+                    } ?: return@let
+                    emitAll(profileMutations)
                 }
             }
         }
         ensurePresence(listOf(signal.post.userId))
-        if (sequenceGap) scope.launch { refreshLatestSafely() }
+        if (cursorUpdate.sequenceGap) scope.launch { refreshLatestSafely() }
     }
 
     private suspend fun handleStatusChange(signal: SocketSignal.StatusChange) {
@@ -414,7 +650,13 @@ class ChannelRepository(
     }
 
     private suspend fun fetchProfiles(posts: Collection<MattermostPost>): List<MattermostUser> {
-        val missing = feedMutex.withLock { feed.missingUserIds(posts) }
+        val requestedIds = posts.asSequence()
+            .map(MattermostPost::userId)
+            .filter(String::isNotBlank)
+            .toSet()
+        val missing = mentionMutex.withLock {
+            requestedIds.filterNotTo(mutableSetOf(), knownUsersById::containsKey)
+        }
         val profiles = if (missing.isEmpty()) emptyList() else api.users(config, missing)
         addMentionUsers(profiles)
         return profiles
@@ -422,6 +664,22 @@ class ChannelRepository(
 
     private suspend fun refreshLatestSafely() {
         runCatching { refreshLatest() }
+    }
+
+    private suspend fun refreshHeadSafely() {
+        runCatching {
+            val token = activeToken() ?: return@runCatching
+            val head = api.posts(config, token.conversation.channelId)
+            if (!isActive(token)) return@runCatching
+            val profiles = fetchProfiles(head.orderedPosts)
+            val mutations = feedMutex.withLock {
+                if (!isActiveLocked(token)) return@withLock null
+                feed.merge(head.orderedPosts, profiles)
+            } ?: return@runCatching
+            emitAll(mutations)
+            scheduleMentionResolution(head.orderedPosts)
+            ensurePresence(head.orderedPosts.map(MattermostPost::userId))
+        }
     }
 
     private fun ensurePresence(userIds: Collection<String>) {
@@ -516,6 +774,7 @@ class ChannelRepository(
         if (users.isEmpty()) return
         mentionMutex.withLock {
             users.forEach { user ->
+                if (user.id.isNotBlank()) knownUsersById[user.id] = user
                 if (user.username.isNotBlank()) {
                     val username = user.username.lowercase(Locale.ROOT)
                     mentionUsersByUsername[username] = user
@@ -543,6 +802,7 @@ class ChannelRepository(
         mentionMutex.withLock {
             if (generation != channelUsersGeneration) return
             sortedUsers.forEach { user ->
+                if (user.id.isNotBlank()) knownUsersById[user.id] = user
                 val username = user.username.lowercase(Locale.ROOT)
                 mentionUsersByUsername[username] = user
                 negativeMentionUsernames.remove(username)
@@ -556,11 +816,13 @@ class ChannelRepository(
         mentionMutex.withLock {
             mentionGeneration++
             mentionUsersByUsername.clear()
+            knownUsersById.clear()
             negativeMentionUsernames.clear()
             inFlightMentionUsernames.clear()
             if (user.username.isNotBlank()) {
                 mentionUsersByUsername[user.username.lowercase(Locale.ROOT)] = user
             }
+            if (user.id.isNotBlank()) knownUsersById[user.id] = user
             _mentionContext.value = MentionContext(
                 currentUserId = user.id,
                 currentUsername = user.username,
@@ -573,6 +835,7 @@ class ChannelRepository(
         mentionMutex.withLock {
             mentionGeneration++
             mentionUsersByUsername.clear()
+            knownUsersById.clear()
             negativeMentionUsernames.clear()
             inFlightMentionUsernames.clear()
             _mentionContext.value = MentionContext()
@@ -597,4 +860,9 @@ class ChannelRepository(
         const val UNCONFIRMED_GRACE_MS = 500L
         val POST_ORDER = compareBy<MattermostPost>({ it.createAt }, { it.id })
     }
+
+    private data class ActiveToken(
+        val conversation: Conversation,
+        val generation: Int,
+    )
 }

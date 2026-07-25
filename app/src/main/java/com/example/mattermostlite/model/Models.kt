@@ -8,6 +8,20 @@ data class ServerConfig(
     val password: String,
 )
 
+data class RememberedServer(
+    val baseUrl: String,
+    val teamName: String,
+    val username: String,
+) {
+    fun asLoginConfig(): ServerConfig = ServerConfig(
+        baseUrl = baseUrl,
+        teamName = teamName,
+        channelName = "",
+        username = username,
+        password = "",
+    )
+}
+
 data class AuthenticatedServerConfig(
     val baseUrl: String,
     val teamName: String,
@@ -58,6 +72,31 @@ data class MattermostChannel(
     val name: String,
     val displayName: String,
 )
+
+sealed interface Conversation {
+    val channel: MattermostChannel
+    val channelId: String
+        get() = channel.id
+    val title: String
+    val canNavigateBack: Boolean
+
+    data class ConfiguredChannel(
+        override val channel: MattermostChannel,
+    ) : Conversation {
+        override val title: String
+            get() = channel.displayName.ifBlank { channel.name }
+        override val canNavigateBack: Boolean = false
+    }
+
+    data class DirectMessage(
+        override val channel: MattermostChannel,
+        val peer: MattermostUser,
+    ) : Conversation {
+        override val title: String
+            get() = peer.displayName
+        override val canNavigateBack: Boolean = true
+    }
+}
 
 data class MattermostTeam(
     val id: String,
@@ -173,7 +212,10 @@ enum class ConnectionState {
 }
 
 sealed interface FeedMutation {
-    data class Replace(val items: List<FeedItem>) : FeedMutation
+    data class Replace(
+        val items: List<FeedItem>,
+        val conversationId: String? = null,
+    ) : FeedMutation
     data class Prepend(val items: List<FeedItem>) : FeedMutation
     data class Insert(val index: Int, val item: FeedItem) : FeedMutation
     data class Update(val previousKey: String, val item: FeedItem) : FeedMutation

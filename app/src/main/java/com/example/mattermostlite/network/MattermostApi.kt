@@ -141,6 +141,23 @@ class MattermostApi(
         )
     }
 
+    suspend fun directChannel(
+        config: AuthenticatedServerConfig,
+        currentUserId: String,
+        otherUserId: String,
+    ): MattermostChannel {
+        require(currentUserId.isNotBlank()) { "The current user ID cannot be blank" }
+        require(otherUserId.isNotBlank()) { "The other user ID cannot be blank" }
+        val body = userIdsBody(listOf(currentUserId, otherUserId)).toRequestBody(JSON_MEDIA_TYPE)
+        return parseChannel(
+            execute(
+                request(config, apiUrl(config, "channels", "direct")).newBuilder()
+                    .post(body)
+                    .build(),
+            ),
+        )
+    }
+
     suspend fun usersByUsernames(
         config: AuthenticatedServerConfig,
         usernames: Collection<String>,

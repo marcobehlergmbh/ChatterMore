@@ -35,6 +35,7 @@ import com.example.mattermostlite.model.FeedFile
 import com.example.mattermostlite.model.FeedItem
 import com.example.mattermostlite.model.LinkPreview
 import com.example.mattermostlite.model.MentionContext
+import com.example.mattermostlite.model.MattermostUser
 import com.example.mattermostlite.model.UserPresence
 import com.example.mattermostlite.network.MattermostImageLoader
 import java.time.Instant
@@ -43,6 +44,7 @@ import java.time.format.DateTimeFormatter
 
 class FeedAdapter(
     private val onRetry: (String) -> Unit,
+    private val onUserClick: (userId: String, title: String) -> Unit,
     private val onImageClick: (FeedImage) -> Unit,
     private val onFileClick: (FeedFile) -> Unit,
     private val onYouTubeClick: (YouTubeVideo) -> Unit,
@@ -70,6 +72,9 @@ class FeedAdapter(
     }
     private var mentionContext = MentionContext()
     private var mentionStyle: MentionStyle? = null
+    private val onMentionUserClick: (MattermostUser) -> Unit = { user ->
+        onUserClick(user.id, user.displayName)
+    }
 
     init {
         setHasStableIds(true)
@@ -260,16 +265,22 @@ class FeedAdapter(
         private var boundLinkPreviewImageUrl: String? = null
         private var tapGlowAnimator: AnimatorSet? = null
         private var tapGlowDrawable: GradientDrawable? = null
+        private var clickableUserId: String? = null
+        private var clickableUserTitle: String? = null
 
         init {
             body.movementMethod = LinkMovementMethod.getInstance()
             body.linksClickable = true
             itemView.setOnLongClickListener { handleLongPress() }
             body.setOnLongClickListener { handleLongPress() }
+            author.setOnClickListener { openBoundUser() }
+            avatar.setOnClickListener { openBoundUser() }
         }
 
         fun bind(item: FeedItem, isContinuation: Boolean, isGroupEnd: Boolean) {
             resetTapGlow()
+            clickableUserId = item.userId
+            clickableUserTitle = item.author
             if (boundAsContinuation != isContinuation || boundAsGroupEnd != isGroupEnd) {
                 boundAsContinuation = isContinuation
                 boundAsGroupEnd = isGroupEnd
@@ -282,6 +293,10 @@ class FeedAdapter(
             }
             if (!isContinuation) {
                 author.text = item.author
+                author.contentDescription = itemView.context.getString(
+                    R.string.open_direct_message,
+                    item.author,
+                )
                 val minute = item.createAt / MessageGrouping.MINUTE_MS
                 time.text = timeLabels.get(minute) ?: timeFormatter
                     .format(Instant.ofEpochMilli(minute * MessageGrouping.MINUTE_MS))
@@ -359,6 +374,8 @@ class FeedAdapter(
 
         fun recycle() {
             resetTapGlow()
+            clickableUserId = null
+            clickableUserTitle = null
             clearAvatar()
             clearSuno()
             clearYouTube()
@@ -367,6 +384,11 @@ class FeedAdapter(
             files?.clearFiles()
             presenceBadge.visibility = View.GONE
             bindAttention(MessageEmphasis.NONE)
+        }
+
+        private fun openBoundUser() {
+            val userId = clickableUserId ?: return
+            onUserClick(userId, clickableUserTitle.orEmpty())
         }
 
         private fun bindAttention(emphasis: MessageEmphasis) {
@@ -653,7 +675,12 @@ class FeedAdapter(
             broadcastText = ContextCompat.getColor(context, R.color.mention_broadcast_text),
             broadcastBackground = ContextCompat.getColor(context, R.color.mention_broadcast_background),
         ).also { mentionStyle = it }
-        return MessageLinkParser.render(message, mentionContext, style).also { rendered ->
+        return MessageLinkParser.render(
+            message,
+            mentionContext,
+            style,
+            onUserClick = onMentionUserClick,
+        ).also { rendered ->
             if (rendered.text !== message || rendered.emphasis != MessageEmphasis.NONE || '@' in message) {
                 formattedMessages.put(message, rendered)
             }

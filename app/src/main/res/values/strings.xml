@@ -34,6 +34,8 @@
     <string name="cancel_edit">Cancel editing</string>
     <string name="edited_hint">(edited)</string>
     <string name="change_connection">Change connection</string>
+    <string name="back_to_configured_channel">Back to configured channel</string>
+    <string name="open_direct_message">Open direct message with %1$s</string>
     <string name="clear_connection_prompt">Clear the saved connection and return to setup?</string>
     <string name="message_hint">Message</string>
     <string name="mention_user_suggestion">@%1$s, %2$s</string>

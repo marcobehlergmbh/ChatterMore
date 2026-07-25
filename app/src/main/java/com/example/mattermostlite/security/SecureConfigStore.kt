@@ -5,6 +5,7 @@ import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.Base64
 import androidx.core.content.edit
+import com.example.mattermostlite.model.RememberedServer
 import com.example.mattermostlite.model.ServerConfig
 import java.security.KeyStore
 import javax.crypto.Cipher
@@ -16,8 +17,9 @@ class SecureConfigStore(context: Context) {
     private val preferences = context.getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE)
 
     fun load(): ServerConfig? {
+        loadRememberedServer()
         if (preferences.contains(LEGACY_KEY_TOKEN) && !preferences.contains(KEY_PASSWORD)) {
-            clear()
+            clearCredentials()
             runCatching {
                 KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
                     .deleteEntry(LEGACY_KEY_ALIAS)
@@ -32,24 +34,65 @@ class SecureConfigStore(context: Context) {
         return runCatching {
             ServerConfig(baseUrl, team, channel, username, decrypt(encryptedPassword))
         }.getOrElse {
-            clear()
+            clearCredentials()
             null
         }
     }
 
     fun save(config: ServerConfig) {
         preferences.edit {
-            clear()
             putString(KEY_BASE_URL, config.baseUrl)
             putString(KEY_TEAM, config.teamName)
             putString(KEY_CHANNEL, config.channelName)
             putString(KEY_USERNAME, config.username)
             putString(KEY_PASSWORD, encrypt(config.password))
+            putRememberedServer(config)
         }
     }
 
-    fun clear() {
-        preferences.edit { clear() }
+    fun rememberServer(config: ServerConfig) {
+        preferences.edit { putRememberedServer(config) }
+    }
+
+    fun loadRememberedServer(): RememberedServer? {
+        val baseUrl = preferences.getString(KEY_LAST_BASE_URL, null)
+            ?: preferences.getString(KEY_BASE_URL, null)
+            ?: return null
+        val team = preferences.getString(KEY_LAST_TEAM, null)
+            ?: preferences.getString(KEY_TEAM, null)
+            ?: return null
+        val username = preferences.getString(KEY_LAST_USERNAME, null)
+            ?: preferences.getString(KEY_USERNAME, null)
+            ?: return null
+        if (
+            !preferences.contains(KEY_LAST_BASE_URL) ||
+            !preferences.contains(KEY_LAST_TEAM) ||
+            !preferences.contains(KEY_LAST_USERNAME)
+        ) {
+            preferences.edit {
+                putString(KEY_LAST_BASE_URL, baseUrl)
+                putString(KEY_LAST_TEAM, team)
+                putString(KEY_LAST_USERNAME, username)
+            }
+        }
+        return RememberedServer(baseUrl, team, username)
+    }
+
+    fun clearCredentials() {
+        preferences.edit {
+            remove(KEY_BASE_URL)
+            remove(KEY_TEAM)
+            remove(KEY_CHANNEL)
+            remove(KEY_USERNAME)
+            remove(KEY_PASSWORD)
+            remove(LEGACY_KEY_TOKEN)
+        }
+    }
+
+    private fun android.content.SharedPreferences.Editor.putRememberedServer(config: ServerConfig) {
+        putString(KEY_LAST_BASE_URL, config.baseUrl)
+        putString(KEY_LAST_TEAM, config.teamName)
+        putString(KEY_LAST_USERNAME, config.username)
     }
 
     private fun encrypt(value: String): String {
@@ -95,6 +138,9 @@ class SecureConfigStore(context: Context) {
         const val KEY_CHANNEL = "channel"
         const val KEY_USERNAME = "username"
         const val KEY_PASSWORD = "password"
+        const val KEY_LAST_BASE_URL = "last_base_url"
+        const val KEY_LAST_TEAM = "last_team"
+        const val KEY_LAST_USERNAME = "last_username"
         const val KEY_ALIAS = "mattermost_lite_credentials"
         const val LEGACY_KEY_TOKEN = "token"
         const val LEGACY_KEY_ALIAS = "mattermost_lite_token"

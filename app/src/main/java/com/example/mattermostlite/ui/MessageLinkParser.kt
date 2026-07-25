@@ -6,8 +6,12 @@ import android.text.style.BackgroundColorSpan
 import android.text.style.ForegroundColorSpan
 import android.text.style.StyleSpan
 import android.text.style.URLSpan
+import android.text.style.ClickableSpan
 import android.graphics.Typeface
+import android.text.TextPaint
+import android.view.View
 import com.example.mattermostlite.model.MentionContext
+import com.example.mattermostlite.model.MattermostUser
 import java.util.Locale
 
 /** Regex-free, single-pass link, emoticon, and mention formatter for the message-list hot path. */
@@ -31,6 +35,7 @@ internal object MessageLinkParser {
         text: String,
         context: MentionContext,
         style: MentionStyle,
+        onUserClick: ((MattermostUser) -> Unit)? = null,
     ): RenderedMessage {
         val formatted = format(text) ?: return RenderedMessage(text, MessageEmphasis.NONE)
         val resolution = resolveMentions(formatted, context)
@@ -81,6 +86,23 @@ internal object MessageLinkParser {
                 mention.end,
                 Spannable.SPAN_EXCLUSIVE_EXCLUSIVE,
             )
+            if (mention.kind == MentionKind.USER && onUserClick != null) {
+                val user = context.usersByUsername[mention.normalizedName]
+                if (user != null) {
+                    spannable?.setSpan(
+                        object : ClickableSpan() {
+                            override fun onClick(widget: View) {
+                                onUserClick(user)
+                            }
+
+                            override fun updateDrawState(ds: TextPaint) = Unit
+                        },
+                        mention.start,
+                        mention.end,
+                        Spannable.SPAN_EXCLUSIVE_EXCLUSIVE,
+                    )
+                }
+            }
         }
         return RenderedMessage(spannable ?: formatted.text, emphasis)
     }

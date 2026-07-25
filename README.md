@@ -1,10 +1,14 @@
 # Mattermost Lite
 
-A deliberately small, foreground-only Android client for one Mattermost channel. It targets Android 10 (API 29) and prioritizes immediate text rendering over feature breadth.
+A deliberately small, foreground-only Android client for one configured Mattermost channel and direct messages. It targets Android 10 (API 29) and prioritizes immediate text rendering over feature breadth.
 
 ## Features
 
 - Connects to one configured team/channel using a Mattermost username and password.
+- Remembers the host, team, and username from the last successful connection without retaining them as credentials.
+- Opens a direct-message conversation by tapping an author, avatar, or resolved `@username`.
+- Sends and receives direct messages through the same bounded, real-time channel pipeline.
+- Returns from a direct message to the configured channel with the header or Android back action.
 - Loads recent history and pages backward with Mattermost's `before=<post_id>` cursor.
 - Fetches missed/new messages with `after=<post_id>` and a defensive latest-page overlap.
 - Receives `posted`, `post_edited`, and `post_deleted` WebSocket events while foregrounded.
@@ -28,7 +32,7 @@ A deliberately small, foreground-only Android client for one Mattermost channel.
 - Refreshes the latest messages after a fling reaches the bottom or a 48dp bottom overscroll.
 - Keeps a bounded 2,000-row in-memory feed and fetches evicted history again when needed.
 
-Threads, reactions, Markdown rendering, multiple channels, offline storage, background sockets, and push notifications are intentionally out of scope.
+Threads, reactions, Markdown rendering, channel browsing, DM unread lists, offline storage, background sockets, and push notifications are intentionally out of scope.
 
 ## Build
 
@@ -54,17 +58,21 @@ The debug APK is written to `app/build/outputs/apk/debug/app-debug.apk`.
 
 The password is encrypted with an AES-GCM key held by Android Keystore. It is exchanged for an in-memory Mattermost session token when the app connects. Android backup and cleartext network traffic are disabled. The server must present a certificate trusted by the Android system trust store.
 
+When credentials are cleared or an automatic reconnect fails, the last successfully connected host, team, and username remain available on the setup screen. The channel and password are not included in that non-secret remembered record.
+
 ## Architecture
 
 - `MattermostApi`: the small REST surface for identity, channel resolution, authors, history, and sends.
 - `MattermostImageLoader`: bounded authenticated preview requests, background downsampling, cancellation, and memory caching.
 - `MattermostSocket`: foreground WebSocket event flow with connection/sequence tracking.
-- `ChannelRepository`: socket lifecycle, cursor requests, author loading, refreshes, and optimistic sends.
+- `ChannelRepository`: active-conversation switching, socket lifecycle, cursor requests, author loading, refreshes, and optimistic sends.
 - `PresenceStore`: batched status snapshots with real-time WebSocket updates and race protection.
 - `FeedStore`: single canonical ordered feed, deduplication, pending reconciliation, and bounded memory.
 - `MainActivity` / `FeedAdapter`: XML Views and targeted RecyclerView mutations.
 
 REST and WebSocket races converge in `FeedStore` by server post ID and `pending_post_id`. Pending rows are never used as pagination cursors.
+
+Conversation switches retain one WebSocket and one bounded 2,000-row `FeedStore`. A generation gate prevents delayed work from a previous channel or DM from mutating the newly active conversation.
 
 ## Performance Validation
 
@@ -72,6 +80,8 @@ Run measurements on a physical low-end Android 10+ device using a release/R8 bui
 
 - Send tap to pending row: p95 at or below 50 ms.
 - WebSocket callback to visible row: p95 at or below 100 ms, excluding network transit.
+- Username tap to loading header: within one frame.
+- Direct-channel response to first visible history: p95 at or below 100 ms, excluding network transit.
 - Fewer than 1% of frames over 16.7 ms while scrolling 1,000 mixed-length rows.
 - No loss or duplicates during a 20-post/second burst.
 

@@ -45,8 +45,12 @@ sealed interface ScreenState {
         val error: String? = null,
     ) : ScreenState
 
-    data class Channel(
+    data class Conversation(
+        val id: String,
         val title: String,
+        val canNavigateBack: Boolean = false,
+        val peerUserId: String? = null,
+        val loading: Boolean = false,
     ) : ScreenState
 }
 
@@ -91,6 +95,9 @@ class MainViewModel(
     private var benchmarkItems: List<FeedItem>? = null
     private var currentUserId: String? = null
     private var loadingOlder = false
+    private var conversationRequestGeneration = 0
+    private var configuredConversationScreen: ScreenState.Conversation? = null
+    private var lastReadyConversationScreen: ScreenState.Conversation? = null
 
     val screen: StateFlow<ScreenState> = _screen.asStateFlow()
     val messageEdit: StateFlow<MessageEditState?> = _messageEdit.asStateFlow()
@@ -115,7 +122,9 @@ class MainViewModel(
         } else {
             val stored = container.configStore.load()
             if (stored == null) {
-                _screen.value = ScreenState.Setup()
+                _screen.value = ScreenState.Setup(
+                    config = container.configStore.loadRememberedServer()?.asLoginConfig(),
+                )
             } else {
                 connect(stored, persist = false)
             }
@@ -124,6 +133,7 @@ class MainViewModel(
 
     fun connect(config: ServerConfig, persist: Boolean = true) {
         if ((_screen.value as? ScreenState.Setup)?.connecting == true) return
+        conversationRequestGeneration++
         clearAttachments()
         _messageEdit.value = null
         _screen.value = ScreenState.Setup(config = config, connecting = true)
@@ -136,14 +146,22 @@ class MainViewModel(
                     val normalized = container.api.normalizedConfig(config)
                     currentUserId = user.id
                     container.imageLoader.configure(authenticatedConfig)
-                    if (persist) container.configStore.save(normalized)
-                    _screen.value = ScreenState.Channel(
+                    if (persist) {
+                        container.configStore.save(normalized)
+                    } else {
+                        container.configStore.rememberServer(normalized)
+                    }
+                    val conversationScreen = ScreenState.Conversation(
+                        id = channel.id,
                         title = channel.displayName.ifBlank { channel.name },
                     )
+                    configuredConversationScreen = conversationScreen
+                    lastReadyConversationScreen = conversationScreen
+                    _screen.value = conversationScreen
                 }
                 .onFailure { error ->
                     currentUserId = null
-                    if (!persist) container.configStore.clear()
+                    if (!persist) container.configStore.clearCredentials()
                     _screen.value = ScreenState.Setup(
                         config = config.copy(password = ""),
                         error = userMessage(error),
@@ -155,11 +173,16 @@ class MainViewModel(
     fun clearConnection() {
         clearAttachments()
         repository.close()
+        conversationRequestGeneration++
         currentUserId = null
+        configuredConversationScreen = null
+        lastReadyConversationScreen = null
         _messageEdit.value = null
         container.imageLoader.configure(null)
-        container.configStore.clear()
-        _screen.value = ScreenState.Setup()
+        container.configStore.clearCredentials()
+        _screen.value = ScreenState.Setup(
+            config = container.configStore.loadRememberedServer()?.asLoginConfig(),
+        )
     }
 
     fun setForeground(foreground: Boolean) {
@@ -204,7 +227,103 @@ class MainViewModel(
                 },
             )
         }
-        _screen.value = ScreenState.Channel("Performance fixture")
+        val fixtureScreen = ScreenState.Conversation(
+            id = "benchmark",
+            title = "Performance fixture",
+        )
+        configuredConversationScreen = fixtureScreen
+        lastReadyConversationScreen = fixtureScreen
+        _screen.value = fixtureScreen
+    }
+
+    fun openDirectMessage(userId: String, title: String) {
+        if (BuildConfig.BENCHMARK_FIXTURES || userId.isBlank()) return
+        val current = _screen.value as? ScreenState.Conversation ?: return
+        if (!current.loading && current.peerUserId == userId) return
+        val fallback = lastReadyConversationScreen ?: current.takeUnless { it.loading } ?: return
+        val requestGeneration = ++conversationRequestGeneration
+        clearConversationBoundComposerState()
+        _screen.value = ScreenState.Conversation(
+            id = "loading-dm:$requestGeneration",
+            title = title.ifBlank { userId },
+            canNavigateBack = true,
+            peerUserId = userId,
+            loading = true,
+        )
+        viewModelScope.launch {
+            runCatching { repository.openDirectMessage(userId) }
+                .onSuccess { conversation ->
+                    if (requestGeneration != conversationRequestGeneration) return@onSuccess
+                    if (conversation == null) {
+                        _screen.value = fallback
+                        return@onSuccess
+                    }
+                    val screen = ScreenState.Conversation(
+                        id = conversation.channelId,
+                        title = conversation.title,
+                        canNavigateBack = true,
+                        peerUserId = conversation.peer.id,
+                    )
+                    lastReadyConversationScreen = screen
+                    _screen.value = screen
+                }
+                .onFailure { error ->
+                    if (error is CancellationException) throw error
+                    if (requestGeneration != conversationRequestGeneration) return@onFailure
+                    _screen.value = fallback
+                    _composerMessages.emit(
+                        when (error) {
+                            is MattermostException -> when (error.statusCode) {
+                                403 -> "This account is not allowed to start direct messages."
+                                404 -> "The selected user is no longer available."
+                                else -> error.message
+                            }
+                            is IOException -> "The direct message could not be opened. Check the connection."
+                            else -> error.message ?: "The direct message could not be opened."
+                        },
+                    )
+                }
+        }
+    }
+
+    fun returnToConfiguredChannel() {
+        if (BuildConfig.BENCHMARK_FIXTURES) return
+        val configured = configuredConversationScreen ?: return
+        val current = _screen.value as? ScreenState.Conversation ?: return
+        if (!current.canNavigateBack && !current.loading) return
+        val fallback = lastReadyConversationScreen ?: current
+        val requestGeneration = ++conversationRequestGeneration
+        clearConversationBoundComposerState()
+        _screen.value = configured.copy(
+            id = "loading-channel:$requestGeneration",
+            loading = true,
+        )
+        viewModelScope.launch {
+            runCatching { repository.returnToConfiguredChannel() }
+                .onSuccess { conversation ->
+                    if (requestGeneration != conversationRequestGeneration) return@onSuccess
+                    if (conversation == null) {
+                        _screen.value = fallback
+                        return@onSuccess
+                    }
+                    val screen = configured.copy(
+                        id = conversation.channelId,
+                        title = conversation.title,
+                        loading = false,
+                    )
+                    configuredConversationScreen = screen
+                    lastReadyConversationScreen = screen
+                    _screen.value = screen
+                }
+                .onFailure { error ->
+                    if (error is CancellationException) throw error
+                    if (requestGeneration != conversationRequestGeneration) return@onFailure
+                    _screen.value = fallback
+                    _composerMessages.emit(
+                        error.message ?: "The configured channel could not be restored.",
+                    )
+                }
+        }
     }
 
     suspend fun snapshot(): List<FeedItem> = benchmarkItems ?: repository.snapshot()
@@ -230,7 +349,7 @@ class MainViewModel(
     fun addAttachments(selections: List<AttachmentSelection>): Boolean {
         if (
             selections.isEmpty() ||
-            screen.value !is ScreenState.Channel ||
+            screen.value.readyConversation() == null ||
             _messageEdit.value != null
         ) {
             selections.forEach(container.attachmentDataSource::discard)
@@ -305,7 +424,7 @@ class MainViewModel(
     fun send(message: String): Boolean {
         val composer = _composer.value
         if (
-            screen.value !is ScreenState.Channel ||
+            screen.value.readyConversation() == null ||
             composer.hasBlockingAttachments ||
             (message.isBlank() && composer.readyFiles.isEmpty())
         ) {
@@ -456,7 +575,7 @@ class MainViewModel(
             _composerMessages.emit(error.message ?: "The selected file could not be opened.")
             return
         }
-        if (generation != attachmentGeneration || _screen.value !is ScreenState.Channel) {
+        if (generation != attachmentGeneration || _screen.value.readyConversation() == null) {
             container.attachmentDataSource.release(source)
             return
         }
@@ -484,6 +603,11 @@ class MainViewModel(
         uploadJobs.clear()
         _composer.value.attachments.forEach { container.attachmentDataSource.release(it.source) }
         _composer.update { it.copy(attachments = emptyList(), resolvingCount = 0) }
+    }
+
+    private fun clearConversationBoundComposerState() {
+        clearAttachments()
+        _messageEdit.value = null
     }
 
     private fun attachmentMessage(error: Throwable): String = when (error) {
@@ -533,3 +657,6 @@ class MainViewModel(
         }
     }
 }
+
+private fun ScreenState.readyConversation(): ScreenState.Conversation? =
+    (this as? ScreenState.Conversation)?.takeUnless { it.loading }
