@@ -5,6 +5,11 @@ import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.Base64
 import androidx.core.content.edit
+import com.example.mattermostlite.background.BackgroundNotificationMode
+import com.example.mattermostlite.background.BackgroundPollingSession
+import com.example.mattermostlite.background.BackgroundPollingSettings
+import com.example.mattermostlite.model.AuthenticatedServerConfig
+import com.example.mattermostlite.model.RememberedConversation
 import com.example.mattermostlite.model.RememberedServer
 import com.example.mattermostlite.model.ServerConfig
 import java.security.KeyStore
@@ -54,6 +59,31 @@ class SecureConfigStore(context: Context) {
         preferences.edit { putRememberedServer(config) }
     }
 
+    fun rememberConversation(conversation: RememberedConversation) {
+        preferences.edit {
+            putString(KEY_LAST_CONVERSATION_BASE_URL, conversation.baseUrl)
+            putString(KEY_LAST_CONVERSATION_TEAM_ID, conversation.teamId)
+            putString(KEY_LAST_CONVERSATION_USER_ID, conversation.userId)
+            putString(KEY_LAST_CONVERSATION_CHANNEL_ID, conversation.channelId)
+        }
+    }
+
+    fun loadRememberedConversation(): RememberedConversation? {
+        val baseUrl = preferences.getString(KEY_LAST_CONVERSATION_BASE_URL, null)
+            ?.takeIf(String::isNotBlank)
+            ?: return null
+        val teamId = preferences.getString(KEY_LAST_CONVERSATION_TEAM_ID, null)
+            ?.takeIf(String::isNotBlank)
+            ?: return null
+        val userId = preferences.getString(KEY_LAST_CONVERSATION_USER_ID, null)
+            ?.takeIf(String::isNotBlank)
+            ?: return null
+        val channelId = preferences.getString(KEY_LAST_CONVERSATION_CHANNEL_ID, null)
+            ?.takeIf(String::isNotBlank)
+            ?: return null
+        return RememberedConversation(baseUrl, teamId, userId, channelId)
+    }
+
     fun loadRememberedServer(): RememberedServer? {
         val baseUrl = preferences.getString(KEY_LAST_BASE_URL, null)
             ?: preferences.getString(KEY_BASE_URL, null)
@@ -79,20 +109,163 @@ class SecureConfigStore(context: Context) {
     }
 
     fun clearCredentials() {
-        preferences.edit {
+        preferences.edit(commit = true) {
             remove(KEY_BASE_URL)
             remove(KEY_TEAM)
             remove(KEY_CHANNEL)
             remove(KEY_USERNAME)
             remove(KEY_PASSWORD)
             remove(LEGACY_KEY_TOKEN)
+            remove(KEY_BACKGROUND_ENABLED)
+            removeBackgroundSession()
         }
+    }
+
+    fun backgroundPollingSettings(): BackgroundPollingSettings = BackgroundPollingSettings(
+        enabled = preferences.getBoolean(KEY_BACKGROUND_ENABLED, false),
+        mode = preferences.getString(KEY_BACKGROUND_MODE, null)
+            ?.let { runCatching { BackgroundNotificationMode.valueOf(it) }.getOrNull() }
+            ?: BackgroundNotificationMode.MENTIONS,
+        showPreview = preferences.getBoolean(KEY_BACKGROUND_PREVIEW, true),
+    )
+
+    fun setBackgroundPollingSettings(settings: BackgroundPollingSettings) {
+        preferences.edit(commit = true) {
+            putBoolean(KEY_BACKGROUND_ENABLED, settings.enabled)
+            putString(KEY_BACKGROUND_MODE, settings.mode.name)
+            putBoolean(KEY_BACKGROUND_PREVIEW, settings.showPreview)
+            if (!settings.enabled) removeBackgroundSession()
+        }
+    }
+
+    fun loadBackgroundPollingSession(): BackgroundPollingSession? {
+        val baseUrl = preferences.getString(KEY_BACKGROUND_BASE_URL, null) ?: return null
+        val team = preferences.getString(KEY_BACKGROUND_TEAM, null) ?: return null
+        val channel = preferences.getString(KEY_BACKGROUND_CHANNEL, null) ?: return null
+        val encryptedToken = preferences.getString(KEY_BACKGROUND_TOKEN, null) ?: return null
+        val channelId = preferences.getString(KEY_BACKGROUND_CHANNEL_ID, null) ?: return null
+        val userId = preferences.getString(KEY_BACKGROUND_USER_ID, null) ?: return null
+        val username = preferences.getString(KEY_BACKGROUND_USERNAME, null) ?: return null
+        return runCatching {
+            BackgroundPollingSession(
+                config = AuthenticatedServerConfig(
+                    baseUrl = baseUrl,
+                    teamName = team,
+                    channelName = channel,
+                    token = decrypt(encryptedToken),
+                ),
+                channelId = channelId,
+                currentUserId = userId,
+                currentUsername = username,
+                checkpointPostId = preferences.getString(KEY_BACKGROUND_CHECKPOINT_ID, null),
+                checkpointCreateAt = preferences.getLong(KEY_BACKGROUND_CHECKPOINT_AT, 0L),
+            )
+        }.getOrElse {
+            clearBackgroundPollingSession()
+            null
+        }
+    }
+
+    fun saveBackgroundPollingSession(session: BackgroundPollingSession) {
+        val previous = loadBackgroundPollingSession()
+        val sameIdentity = previous?.sameIdentityAs(session) == true
+        val checkpointPostId = if (sameIdentity) {
+            newerCheckpoint(previous, session).checkpointPostId
+        } else {
+            session.checkpointPostId
+        }
+        val checkpointCreateAt = if (sameIdentity) {
+            newerCheckpoint(previous, session).checkpointCreateAt
+        } else {
+            session.checkpointCreateAt
+        }
+        preferences.edit(commit = true) {
+            putString(KEY_BACKGROUND_BASE_URL, session.config.baseUrl)
+            putString(KEY_BACKGROUND_TEAM, session.config.teamName)
+            putString(KEY_BACKGROUND_CHANNEL, session.config.channelName)
+            putString(KEY_BACKGROUND_TOKEN, encrypt(session.config.token))
+            putString(KEY_BACKGROUND_CHANNEL_ID, session.channelId)
+            putString(KEY_BACKGROUND_USER_ID, session.currentUserId)
+            putString(KEY_BACKGROUND_USERNAME, session.currentUsername)
+            putString(KEY_BACKGROUND_CHECKPOINT_ID, checkpointPostId)
+            putLong(KEY_BACKGROUND_CHECKPOINT_AT, checkpointCreateAt)
+            putBoolean(KEY_BACKGROUND_AUTH_BLOCKED, false)
+        }
+    }
+
+    fun advanceBackgroundCheckpoint(
+        postId: String,
+        createAt: Long,
+        foregroundSync: Boolean,
+    ): Boolean {
+        if (postId.isBlank()) return false
+        val currentId = preferences.getString(KEY_BACKGROUND_CHECKPOINT_ID, null)
+        val currentAt = preferences.getLong(KEY_BACKGROUND_CHECKPOINT_AT, 0L)
+        if (createAt < currentAt || (createAt == currentAt && currentId != null && postId <= currentId)) {
+            return false
+        }
+        preferences.edit(commit = !foregroundSync) {
+            putString(KEY_BACKGROUND_CHECKPOINT_ID, postId)
+            putLong(KEY_BACKGROUND_CHECKPOINT_AT, createAt)
+            if (foregroundSync) putLong(KEY_BACKGROUND_FOREGROUND_SYNC_AT, System.currentTimeMillis())
+        }
+        return true
+    }
+
+    fun lastForegroundSyncAt(): Long =
+        preferences.getLong(KEY_BACKGROUND_FOREGROUND_SYNC_AT, 0L)
+
+    fun isBackgroundAuthenticationBlocked(): Boolean =
+        preferences.getBoolean(KEY_BACKGROUND_AUTH_BLOCKED, false)
+
+    fun blockBackgroundAuthentication() {
+        preferences.edit(commit = true) { putBoolean(KEY_BACKGROUND_AUTH_BLOCKED, true) }
+    }
+
+    fun clearBackgroundPollingSession() {
+        preferences.edit(commit = true) { removeBackgroundSession() }
     }
 
     private fun android.content.SharedPreferences.Editor.putRememberedServer(config: ServerConfig) {
         putString(KEY_LAST_BASE_URL, config.baseUrl)
         putString(KEY_LAST_TEAM, config.teamName)
         putString(KEY_LAST_USERNAME, config.username)
+    }
+
+    private fun android.content.SharedPreferences.Editor.removeBackgroundSession() {
+        remove(KEY_BACKGROUND_BASE_URL)
+        remove(KEY_BACKGROUND_TEAM)
+        remove(KEY_BACKGROUND_CHANNEL)
+        remove(KEY_BACKGROUND_TOKEN)
+        remove(KEY_BACKGROUND_CHANNEL_ID)
+        remove(KEY_BACKGROUND_USER_ID)
+        remove(KEY_BACKGROUND_USERNAME)
+        remove(KEY_BACKGROUND_CHECKPOINT_ID)
+        remove(KEY_BACKGROUND_CHECKPOINT_AT)
+        remove(KEY_BACKGROUND_FOREGROUND_SYNC_AT)
+        remove(KEY_BACKGROUND_AUTH_BLOCKED)
+    }
+
+    private fun BackgroundPollingSession.sameIdentityAs(other: BackgroundPollingSession): Boolean =
+        config.baseUrl == other.config.baseUrl &&
+            config.teamName == other.config.teamName &&
+            config.channelName == other.config.channelName &&
+            channelId == other.channelId &&
+            currentUserId == other.currentUserId
+
+    private fun newerCheckpoint(
+        first: BackgroundPollingSession,
+        second: BackgroundPollingSession,
+    ): BackgroundPollingSession = if (
+        second.checkpointCreateAt > first.checkpointCreateAt ||
+        (
+            second.checkpointCreateAt == first.checkpointCreateAt &&
+                second.checkpointPostId.orEmpty() > first.checkpointPostId.orEmpty()
+            )
+    ) {
+        second
+    } else {
+        first
     }
 
     private fun encrypt(value: String): String {
@@ -141,6 +314,24 @@ class SecureConfigStore(context: Context) {
         const val KEY_LAST_BASE_URL = "last_base_url"
         const val KEY_LAST_TEAM = "last_team"
         const val KEY_LAST_USERNAME = "last_username"
+        const val KEY_LAST_CONVERSATION_BASE_URL = "last_conversation_base_url"
+        const val KEY_LAST_CONVERSATION_TEAM_ID = "last_conversation_team_id"
+        const val KEY_LAST_CONVERSATION_USER_ID = "last_conversation_user_id"
+        const val KEY_LAST_CONVERSATION_CHANNEL_ID = "last_conversation_channel_id"
+        const val KEY_BACKGROUND_ENABLED = "background_enabled"
+        const val KEY_BACKGROUND_MODE = "background_mode"
+        const val KEY_BACKGROUND_PREVIEW = "background_preview"
+        const val KEY_BACKGROUND_BASE_URL = "background_base_url"
+        const val KEY_BACKGROUND_TEAM = "background_team"
+        const val KEY_BACKGROUND_CHANNEL = "background_channel"
+        const val KEY_BACKGROUND_TOKEN = "background_token"
+        const val KEY_BACKGROUND_CHANNEL_ID = "background_channel_id"
+        const val KEY_BACKGROUND_USER_ID = "background_user_id"
+        const val KEY_BACKGROUND_USERNAME = "background_username"
+        const val KEY_BACKGROUND_CHECKPOINT_ID = "background_checkpoint_id"
+        const val KEY_BACKGROUND_CHECKPOINT_AT = "background_checkpoint_at"
+        const val KEY_BACKGROUND_FOREGROUND_SYNC_AT = "background_foreground_sync_at"
+        const val KEY_BACKGROUND_AUTH_BLOCKED = "background_auth_blocked"
         const val KEY_ALIAS = "mattermost_lite_credentials"
         const val LEGACY_KEY_TOKEN = "token"
         const val LEGACY_KEY_ALIAS = "mattermost_lite_token"

@@ -3,6 +3,9 @@ package com.example.mattermostlite.data
 import com.example.mattermostlite.model.ConnectionState
 import com.example.mattermostlite.model.AuthenticatedServerConfig
 import com.example.mattermostlite.model.Conversation
+import com.example.mattermostlite.model.ConversationKind
+import com.example.mattermostlite.model.ConversationMutation
+import com.example.mattermostlite.model.ConversationSummary
 import com.example.mattermostlite.model.DeliveryState
 import com.example.mattermostlite.model.FeedItem
 import com.example.mattermostlite.model.FeedMutation
@@ -10,6 +13,7 @@ import com.example.mattermostlite.model.MattermostChannel
 import com.example.mattermostlite.model.MattermostFile
 import com.example.mattermostlite.model.MattermostPost
 import com.example.mattermostlite.model.MattermostUser
+import com.example.mattermostlite.model.InitializedDirectory
 import com.example.mattermostlite.model.MentionContext
 import com.example.mattermostlite.model.ServerConfig
 import com.example.mattermostlite.model.SocketCursor
@@ -23,6 +27,8 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -35,7 +41,6 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import kotlinx.coroutines.withTimeoutOrNull
 import java.io.IOException
 import java.util.UUID
 import java.util.Locale
@@ -49,6 +54,7 @@ class ChannelRepository(
     private val api: MattermostApi,
     private val socket: MattermostSocket,
     private val scope: CoroutineScope,
+    private val conversationCache: ConversationSummaryCache,
     unsupportedMessage: String,
 ) {
     private val feed = FeedStore(unsupportedMessage)
@@ -57,7 +63,10 @@ class ChannelRepository(
     private val olderMutex = Mutex()
     private val refreshMutex = Mutex()
     private val mentionMutex = Mutex()
+    private val directoryMutex = Mutex()
     private val _mutations = MutableSharedFlow<FeedMutation>(extraBufferCapacity = 256)
+    private val _conversationMutations =
+        MutableSharedFlow<ConversationMutation>(extraBufferCapacity = 256)
     private val _connectionState = MutableStateFlow(ConnectionState.OFFLINE)
     private val _refreshing = MutableStateFlow(false)
     private val _uploadCapabilities = MutableStateFlow(UploadCapabilities())
@@ -66,6 +75,8 @@ class ChannelRepository(
     private val _channelUsers = MutableStateFlow<List<MattermostUser>>(emptyList())
 
     val mutations: SharedFlow<FeedMutation> = _mutations.asSharedFlow()
+    val conversationMutations: SharedFlow<ConversationMutation> =
+        _conversationMutations.asSharedFlow()
     val connectionState: StateFlow<ConnectionState> = _connectionState.asStateFlow()
     val refreshing: StateFlow<Boolean> = _refreshing.asStateFlow()
     val uploadCapabilities: StateFlow<UploadCapabilities> = _uploadCapabilities.asStateFlow()
@@ -74,10 +85,25 @@ class ChannelRepository(
     val channelUsers: StateFlow<List<MattermostUser>> = _channelUsers.asStateFlow()
 
     private lateinit var config: AuthenticatedServerConfig
-    private lateinit var configuredConversation: Conversation.ConfiguredChannel
     private lateinit var activeConversation: Conversation
     private lateinit var currentUser: MattermostUser
+    private lateinit var currentTeam: com.example.mattermostlite.model.MattermostTeam
+    private val directoryById = linkedMapOf<String, ConversationSummary>()
+    private var directoryOrder = emptyList<String>()
+    private var directoryCacheKey: ConversationSummaryCache.Key? = null
+    private var directoryCacheJob: Job? = null
+    private val recentConversationPages =
+        object : LinkedHashMap<String, CachedConversationPage>(8, 0.75f, true) {
+            override fun removeEldestEntry(
+                eldest: MutableMap.MutableEntry<String, CachedConversationPage>,
+            ): Boolean = size > MAX_RECENT_CONVERSATIONS
+        }
     private var activeConversationGeneration = 0
+    private var conversationSelected = false
+    private var conversationSwitching = false
+    @Volatile
+    private var activeConversationAtLatest = false
+    private var activeReadAckJob: Job? = null
     private val conversationGeneration = AtomicInteger()
     private val postArrivedDuringConversationSwitch = AtomicBoolean()
     private var initialized = false
@@ -97,11 +123,15 @@ class ChannelRepository(
 
     suspend fun initialize(
         rawConfig: ServerConfig,
-    ): Triple<MattermostChannel, MattermostUser, AuthenticatedServerConfig> {
+        onCachedDirectory: (InitializedDirectory) -> Unit = {},
+    ): InitializedDirectory {
         stopSocket()
         initialized = false
-        val conversationRequest = conversationGeneration.incrementAndGet()
+        conversationGeneration.incrementAndGet()
         postArrivedDuringConversationSwitch.set(false)
+        conversationSelected = false
+        conversationSwitching = false
+        activeConversationAtLatest = false
         presenceGeneration++
         socketCursor = null
         olderExhausted = false
@@ -109,50 +139,89 @@ class ChannelRepository(
         _userPresence.value = emptyMap()
         _channelUsers.value = emptyList()
         channelUsersGeneration++
-        val usersGeneration = channelUsersGeneration
         _uploadCapabilities.value = UploadCapabilities()
         clearMentionContext()
         val (authenticatedConfig, authenticatedUser) = api.login(rawConfig)
         config = authenticatedConfig
         currentUser = authenticatedUser
+        currentTeam = api.resolveTeam(config)
         resetMentionContext(authenticatedUser)
         _channelUsers.value = listOf(authenticatedUser)
-        val configuredChannel = api.resolveChannel(config)
-        configuredConversation = Conversation.ConfiguredChannel(configuredChannel)
-        _uploadCapabilities.value = runCatching { api.uploadCapabilities(config) }
-            .getOrDefault(UploadCapabilities())
+        directoryCacheKey = ConversationSummaryCache.Key(
+            baseUrl = config.baseUrl,
+            userId = currentUser.id,
+            teamId = currentTeam.id,
+        )
+        val cached = directoryCacheKey
+            ?.let { conversationCache.load(it) }
+            .orEmpty()
+        if (cached.isNotEmpty()) {
+            replaceDirectory(cached, emit = false)
+            onCachedDirectory(
+                InitializedDirectory(currentTeam, currentUser, config, cached),
+            )
+        }
         initialized = true
         if (foreground) startSocket()
-        withTimeoutOrNull(3_000) { socketReady.await() }
 
-        val page = api.posts(config, configuredConversation.channelId)
-        val posts = page.orderedPosts
-        val profiles = fetchProfiles(posts)
-        refreshPresence(posts.map(MattermostPost::userId) + currentUser.id)
-        feedMutex.withLock {
-            if (conversationRequest != conversationGeneration.get()) {
-                throw CancellationException("Connection was replaced")
+        val directory = runCatching {
+            coroutineScope {
+                val channelsRequest = async {
+                    api.channelsForUser(config, currentUser.id, currentTeam.id)
+                }
+                val membershipsRequest = async {
+                    api.channelMemberships(config, currentUser.id, currentTeam.id)
+                }
+                val capabilitiesRequest = async {
+                    runCatching { api.uploadCapabilities(config) }
+                        .getOrDefault(UploadCapabilities())
+                }
+                val channels = channelsRequest.await()
+                val peerIds = directMessagePeerIds(channels, currentUser.id)
+                val peers = if (peerIds.isEmpty()) emptyList() else api.users(config, peerIds)
+                addMentionUsers(peers)
+                _uploadCapabilities.value = capabilitiesRequest.await()
+                buildConversationDirectory(
+                    channels = channels,
+                    memberships = membershipsRequest.await(),
+                    currentUserId = currentUser.id,
+                    users = peers,
+                )
             }
-            activeConversation = configuredConversation
-            activeConversationGeneration = conversationRequest
-            val mutation = feed.replace(posts, profiles + currentUser).copy(
-                conversationId = configuredConversation.channelId,
-            )
-            _mutations.emit(mutation)
+        }.getOrElse { error ->
+            if (cached.isNotEmpty()) {
+                return InitializedDirectory(currentTeam, currentUser, config, cached)
+            }
+            throw error
         }
-        if (postArrivedDuringConversationSwitch.getAndSet(false)) {
-            scope.launch { refreshHeadSafely() }
+        replaceDirectory(directory, emit = cached.isNotEmpty())
+        return InitializedDirectory(currentTeam, currentUser, config, directory)
+    }
+
+    suspend fun openConversation(channelId: String): Conversation? {
+        if (!initialized || channelId.isBlank()) return null
+        activeToken()?.conversation
+            ?.takeIf { it.channelId == channelId }
+            ?.let { return it }
+        val summary = directoryMutex.withLock { directoryById[channelId] } ?: return null
+        val generation = conversationGeneration.incrementAndGet()
+        return switchConversation(generation) {
+            when (summary.kind) {
+                ConversationKind.CHANNEL -> Conversation.Channel(summary.channel)
+                ConversationKind.DIRECT_MESSAGE -> {
+                    val userId = summary.peerUserId
+                    if (userId == null) {
+                        Conversation.Channel(summary.channel)
+                    } else {
+                    val peer = knownUser(userId)
+                        ?: api.users(config, listOf(userId)).singleOrNull()
+                        ?: throw IllegalArgumentException("The selected user could not be found.")
+                    addMentionUsers(listOf(peer))
+                    Conversation.DirectMessage(summary.channel, peer)
+                    }
+                }
+            }
         }
-        scheduleMentionResolution(posts)
-        scope.launch {
-            loadChannelUsers(
-                usersGeneration,
-                config,
-                configuredConversation.channelId,
-                currentUser,
-            )
-        }
-        return Triple(configuredChannel, currentUser, config)
     }
 
     suspend fun openDirectMessage(userId: String): Conversation.DirectMessage? {
@@ -169,18 +238,9 @@ class ChannelRepository(
                 ?: throw IllegalArgumentException("The selected user could not be found.")
             addMentionUsers(listOf(peer))
             val directChannel = api.directChannel(config, currentUser.id, peer.id)
+            upsertDirectConversation(directChannel, peer)
             Conversation.DirectMessage(directChannel, peer)
         } as? Conversation.DirectMessage
-    }
-
-    suspend fun returnToConfiguredChannel(): Conversation.ConfiguredChannel? {
-        if (!initialized) return null
-        activeToken()?.conversation
-            ?.takeIf { it is Conversation.ConfiguredChannel }
-            ?.let { return it as Conversation.ConfiguredChannel }
-        val generation = conversationGeneration.incrementAndGet()
-        return switchConversation(generation) { configuredConversation }
-            as? Conversation.ConfiguredChannel
     }
 
     fun setForeground(value: Boolean) {
@@ -188,7 +248,27 @@ class ChannelRepository(
         if (value && initialized) startSocket() else if (!value) stopSocket()
     }
 
+    fun leaveConversation() {
+        conversationGeneration.incrementAndGet()
+        activeConversationGeneration = 0
+        conversationSelected = false
+        conversationSwitching = false
+        activeConversationAtLatest = false
+        activeReadAckJob?.cancel()
+        activeReadAckJob = null
+        postArrivedDuringConversationSwitch.set(false)
+        channelUsersGeneration++
+        _channelUsers.value = if (::currentUser.isInitialized) listOf(currentUser) else emptyList()
+    }
+
     suspend fun snapshot(): List<FeedItem> = feedMutex.withLock { feed.snapshot() }
+
+    fun setActiveConversationAtLatest(value: Boolean) {
+        val changed = activeConversationAtLatest != value
+        activeConversationAtLatest = value
+        if (!changed || !value || !conversationSelected) return
+        scheduleActiveReadAcknowledgement()
+    }
 
     suspend fun loadOlder() {
         if (olderExhausted || !olderMutex.tryLock()) return
@@ -336,6 +416,7 @@ class ChannelRepository(
                 if (!isActiveLocked(token)) return@withLock null
                 feed.merge(listOf(post), listOf(currentUser))
             } ?: return true
+            invalidateRecentPage(token.conversation.channelId)
             emitAll(mutations)
             scheduleMentionResolution(listOf(post))
             true
@@ -359,7 +440,13 @@ class ChannelRepository(
 
     fun close() {
         stopSocket()
+        directoryCacheJob?.cancel()
+        directoryCacheJob = null
+        activeReadAckJob?.cancel()
+        activeReadAckJob = null
         initialized = false
+        conversationSelected = false
+        conversationSwitching = false
         conversationGeneration.incrementAndGet()
         postArrivedDuringConversationSwitch.set(false)
         presenceGeneration++
@@ -367,6 +454,10 @@ class ChannelRepository(
         presenceStore.clear()
         _userPresence.value = emptyMap()
         _channelUsers.value = emptyList()
+        directoryById.clear()
+        directoryOrder = emptyList()
+        directoryCacheKey = null
+        synchronized(recentConversationPages) { recentConversationPages.clear() }
         scope.launch { clearMentionContext() }
     }
 
@@ -388,6 +479,7 @@ class ChannelRepository(
             feed.merge(listOf(post), listOf(currentUser))
         }
         if (mutations != null) {
+            invalidateRecentPage(token.conversation.channelId)
             emitAll(mutations)
             scheduleMentionResolution(listOf(post))
         }
@@ -418,13 +510,26 @@ class ChannelRepository(
     ): Conversation? {
         channelUsersGeneration++
         val usersGeneration = channelUsersGeneration
+        conversationSwitching = true
         return try {
+            val previousChannelId = feedMutex.withLock {
+                if (::activeConversation.isInitialized) activeConversation.channelId else null
+            }
             val target = resolve()
             if (generation != conversationGeneration.get()) return null
-            val page = api.posts(config, target.channelId)
-            if (generation != conversationGeneration.get()) return null
-            val posts = page.orderedPosts
-            val profiles = fetchProfiles(posts)
+            val cached = recentPage(target)
+            val posts: List<MattermostPost>
+            val profiles: List<MattermostUser>
+            if (cached == null) {
+                val page = api.posts(config, target.channelId)
+                if (generation != conversationGeneration.get()) return null
+                posts = page.orderedPosts
+                profiles = fetchProfiles(posts)
+                cacheRecentPage(target.channelId, posts, profiles)
+            } else {
+                posts = cached.posts
+                profiles = cached.profiles
+            }
             if (generation != conversationGeneration.get()) return null
 
             feedMutex.withLock {
@@ -432,6 +537,9 @@ class ChannelRepository(
                 olderExhausted = false
                 activeConversation = target
                 activeConversationGeneration = generation
+                conversationSelected = true
+                conversationSwitching = false
+                activeConversationAtLatest = true
                 val mutation = feed.replace(posts, profiles + currentUser).copy(
                     conversationId = target.channelId,
                 )
@@ -441,7 +549,7 @@ class ChannelRepository(
             ensurePresence(posts.map(MattermostPost::userId) + currentUser.id)
 
             when (target) {
-                is Conversation.ConfiguredChannel -> scope.launch {
+                is Conversation.Channel -> scope.launch {
                     loadChannelUsers(
                         usersGeneration,
                         config,
@@ -459,11 +567,13 @@ class ChannelRepository(
                     ensurePresence(listOf(target.peer.id))
                 }
             }
+            markConversationRead(target.channelId, previousChannelId)
             if (postArrivedDuringConversationSwitch.getAndSet(false)) {
                 scope.launch { refreshHeadSafely() }
             }
             target
         } catch (error: Exception) {
+            conversationSwitching = false
             restoreActiveConversationAfterFailedSwitch(generation)
             throw error
         }
@@ -477,6 +587,7 @@ class ChannelRepository(
                 ::activeConversation.isInitialized
             ) {
                 activeConversationGeneration = generation
+                conversationSelected = true
                 restored = true
             }
         }
@@ -488,6 +599,7 @@ class ChannelRepository(
     private suspend fun activeToken(): ActiveToken? = feedMutex.withLock {
         if (
             !initialized ||
+            !conversationSelected ||
             !::activeConversation.isInitialized ||
             activeConversationGeneration != conversationGeneration.get()
         ) {
@@ -500,10 +612,13 @@ class ChannelRepository(
     private suspend fun activeTokenForSocketPost(): ActiveToken? = feedMutex.withLock {
         if (
             !initialized ||
+            !conversationSelected ||
             !::activeConversation.isInitialized ||
             activeConversationGeneration != conversationGeneration.get()
         ) {
-            if (initialized) postArrivedDuringConversationSwitch.set(true)
+            if (initialized && conversationSwitching) {
+                postArrivedDuringConversationSwitch.set(true)
+            }
             null
         } else {
             ActiveToken(activeConversation, activeConversationGeneration)
@@ -588,7 +703,8 @@ class ChannelRepository(
             signal.channelId == token.conversation.channelId &&
             signal.post.channelId == token.conversation.channelId
         if (!matchesActiveConversation) {
-            if (cursorUpdate.sequenceGap) scope.launch { refreshLatestSafely() }
+            val updated = updateInactiveConversation(signal)
+            if (!updated || cursorUpdate.sequenceGap) scope.launch { refreshDirectorySafely() }
             return
         }
         token ?: return
@@ -596,7 +712,10 @@ class ChannelRepository(
             if (!isActiveLocked(token)) return@withLock null
             feed.merge(listOf(signal.post))
         } ?: return
+        invalidateRecentPage(token.conversation.channelId)
         emitAll(mutations)
+        updateActiveConversation(signal)
+        if (activeConversationAtLatest) scheduleActiveReadAcknowledgement()
         scheduleMentionResolution(listOf(signal.post))
 
         if (signal.post.fileIds.isNotEmpty() && signal.post.files.isEmpty() && signal.post.deleteAt == 0L) {
@@ -631,7 +750,201 @@ class ChannelRepository(
             }
         }
         ensurePresence(listOf(signal.post.userId))
-        if (cursorUpdate.sequenceGap) scope.launch { refreshLatestSafely() }
+        if (cursorUpdate.sequenceGap) scope.launch {
+            refreshLatestSafely()
+            refreshDirectorySafely()
+        }
+    }
+
+    private suspend fun replaceDirectory(
+        conversations: List<ConversationSummary>,
+        emit: Boolean,
+    ) {
+        directoryMutex.withLock {
+            directoryById.clear()
+            conversations.forEach { directoryById[it.id] = it }
+            directoryOrder = conversations.map(ConversationSummary::id)
+        }
+        scheduleDirectoryCacheWrite()
+        if (emit) _conversationMutations.emit(ConversationMutation.Replace(conversations))
+    }
+
+    private suspend fun updateInactiveConversation(signal: SocketSignal.PostEvent): Boolean {
+        if (signal.event != "posted" || signal.post.deleteAt != 0L) {
+            return directoryMutex.withLock { signal.channelId in directoryById }
+        }
+        var updated: ConversationSummary? = null
+        directoryMutex.withLock {
+            val current = directoryById[signal.channelId] ?: return@withLock
+            updated = applyInactivePost(
+                summary = current,
+                post = signal.post,
+                event = signal.event,
+                currentUserId = currentUser.id,
+            )
+            directoryById[signal.channelId] = requireNotNull(updated)
+        }
+        val value = updated ?: return false
+        scheduleDirectoryCacheWrite()
+        _conversationMutations.emit(ConversationMutation.Update(value))
+        return true
+    }
+
+    private suspend fun updateActiveConversation(signal: SocketSignal.PostEvent) {
+        if (signal.event != "posted" || signal.post.deleteAt != 0L) return
+        var updated: ConversationSummary? = null
+        directoryMutex.withLock {
+            val current = directoryById[signal.channelId] ?: return@withLock
+            val lastPostAt = maxOf(current.lastPostAt, signal.post.createAt)
+            updated = current.copy(
+                channel = current.channel.copy(lastPostAt = lastPostAt),
+                lastPostAt = lastPostAt,
+                unread = if (activeConversationAtLatest) {
+                    false
+                } else {
+                    current.unread || signal.post.userId != currentUser.id
+                },
+                mentionCount = if (activeConversationAtLatest) 0 else current.mentionCount,
+            )
+            directoryById[signal.channelId] = requireNotNull(updated)
+        }
+        updated?.let { _conversationMutations.emit(ConversationMutation.Update(it)) }
+        scheduleDirectoryCacheWrite()
+    }
+
+    private suspend fun markConversationRead(channelId: String, previousChannelId: String?) {
+        val cleared: ConversationSummary
+        directoryMutex.withLock {
+            val current = directoryById[channelId] ?: return
+            cleared = current.copy(unread = false, mentionCount = 0)
+            directoryById[channelId] = cleared
+        }
+        _conversationMutations.emit(ConversationMutation.Update(cleared))
+        scheduleDirectoryCacheWrite()
+        runCatching {
+            api.viewChannel(config, currentUser.id, channelId, previousChannelId)
+        }.onFailure {
+            scope.launch { refreshDirectorySafely() }
+        }
+    }
+
+    private fun scheduleActiveReadAcknowledgement() {
+        activeReadAckJob?.cancel()
+        activeReadAckJob = scope.launch {
+            delay(ACTIVE_READ_ACK_DELAY_MS)
+            if (!activeConversationAtLatest) return@launch
+            val token = activeToken() ?: return@launch
+            markConversationRead(token.conversation.channelId, previousChannelId = null)
+        }
+    }
+
+    private suspend fun upsertDirectConversation(
+        channel: MattermostChannel,
+        peer: MattermostUser,
+    ) {
+        var summary = ConversationSummary(
+            channel = channel.copy(type = channel.type.ifBlank { "D" }),
+            kind = ConversationKind.DIRECT_MESSAGE,
+            title = peer.displayName,
+            peerUserId = peer.id,
+            peerUsername = peer.username,
+        )
+        var replacement: List<ConversationSummary>? = null
+        var updateOnly = false
+        directoryMutex.withLock {
+            val current = directoryById[summary.id]
+            updateOnly = current != null
+            if (current != null) {
+                val lastPostAt = maxOf(current.lastPostAt, summary.lastPostAt)
+                summary = summary.copy(
+                    channel = summary.channel.copy(lastPostAt = lastPostAt),
+                    lastPostAt = lastPostAt,
+                    unread = current.unread,
+                    mentionCount = current.mentionCount,
+                )
+            }
+            directoryById[summary.id] = summary
+            if (!updateOnly) {
+                directoryOrder = directoryOrder + summary.id
+                replacement = directoryOrder.mapNotNull(directoryById::get)
+            }
+        }
+        scheduleDirectoryCacheWrite()
+        if (updateOnly) {
+            _conversationMutations.emit(ConversationMutation.Update(summary))
+        } else {
+            _conversationMutations.emit(ConversationMutation.Replace(replacement.orEmpty()))
+        }
+    }
+
+    private suspend fun refreshDirectorySafely() {
+        if (!initialized) return
+        runCatching {
+            coroutineScope {
+                val channelsRequest = async {
+                    api.channelsForUser(config, currentUser.id, currentTeam.id)
+                }
+                val membershipsRequest = async {
+                    api.channelMemberships(config, currentUser.id, currentTeam.id)
+                }
+                val channels = channelsRequest.await()
+                val peerIds = directMessagePeerIds(channels, currentUser.id)
+                val peers = if (peerIds.isEmpty()) emptyList() else api.users(config, peerIds)
+                addMentionUsers(peers)
+                buildConversationDirectory(
+                    channels,
+                    membershipsRequest.await(),
+                    currentUser.id,
+                    peers,
+                )
+            }
+        }.onSuccess { replaceDirectory(it, emit = true) }
+    }
+
+    private fun scheduleDirectoryCacheWrite() {
+        val key = directoryCacheKey ?: return
+        directoryCacheJob?.cancel()
+        directoryCacheJob = scope.launch {
+            delay(DIRECTORY_CACHE_WRITE_DELAY_MS)
+            val snapshot = directoryMutex.withLock {
+                directoryOrder.mapNotNull(directoryById::get)
+            }
+            conversationCache.save(key, snapshot)
+        }
+    }
+
+    private fun recentPage(target: Conversation): CachedConversationPage? {
+        val cached = synchronized(recentConversationPages) {
+            recentConversationPages[target.channelId]
+        } ?: return null
+        val age = System.nanoTime() - cached.cachedAtNanos
+        if (age > RECENT_CONVERSATION_TTL_NANOS) {
+            invalidateRecentPage(target.channelId)
+            return null
+        }
+        if (target.channel.lastPostAt > cached.lastPostAt) {
+            invalidateRecentPage(target.channelId)
+            return null
+        }
+        return cached
+    }
+
+    private fun cacheRecentPage(
+        channelId: String,
+        posts: List<MattermostPost>,
+        profiles: List<MattermostUser>,
+    ) {
+        val page = CachedConversationPage(
+            posts = posts,
+            profiles = profiles,
+            lastPostAt = posts.maxOfOrNull(MattermostPost::createAt) ?: 0L,
+            cachedAtNanos = System.nanoTime(),
+        )
+        synchronized(recentConversationPages) { recentConversationPages[channelId] = page }
+    }
+
+    private fun invalidateRecentPage(channelId: String) {
+        synchronized(recentConversationPages) { recentConversationPages.remove(channelId) }
     }
 
     private suspend fun handleStatusChange(signal: SocketSignal.StatusChange) {
@@ -858,11 +1171,22 @@ class ChannelRepository(
         const val MAX_HISTORY_SCAN_PAGES = 50
         const val MAX_MENTION_LOOKUP_USERNAMES = 100
         const val UNCONFIRMED_GRACE_MS = 500L
+        const val DIRECTORY_CACHE_WRITE_DELAY_MS = 250L
+        const val ACTIVE_READ_ACK_DELAY_MS = 500L
+        const val MAX_RECENT_CONVERSATIONS = 5
+        const val RECENT_CONVERSATION_TTL_NANOS = 30_000_000_000L
         val POST_ORDER = compareBy<MattermostPost>({ it.createAt }, { it.id })
     }
 
     private data class ActiveToken(
         val conversation: Conversation,
         val generation: Int,
+    )
+
+    private data class CachedConversationPage(
+        val posts: List<MattermostPost>,
+        val profiles: List<MattermostUser>,
+        val lastPostAt: Long,
+        val cachedAtNanos: Long,
     )
 }

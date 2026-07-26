@@ -5,6 +5,12 @@
     <string name="server_url_hint">https://mattermost.example.com</string>
     <string name="team_name">Team URL or display name</string>
     <string name="channel_name">Channel URL or display name</string>
+    <string name="conversations">Conversations</string>
+    <string name="channels">Channels</string>
+    <string name="direct_messages">Direct messages</string>
+    <string name="no_conversations">No channels or direct messages were found.</string>
+    <string name="unread">Unread</string>
+    <string name="back_to_conversations">Back to conversations</string>
     <string name="username">Username</string>
     <string name="password">Password</string>
     <string name="connect">Connect</string>
@@ -37,6 +43,24 @@
     <string name="back_to_configured_channel">Back to configured channel</string>
     <string name="open_direct_message">Open direct message with %1$s</string>
     <string name="clear_connection_prompt">Clear the saved connection and return to setup?</string>
+    <string name="connection_settings">Connection settings</string>
+    <string name="background_message_checks">Background message checks</string>
+    <string name="background_message_checks_explanation">Checks this channel about every 15 minutes while the app is closed. Android may delay checks to save battery.</string>
+    <string name="notify_for">Notify for</string>
+    <string name="mentions_only">Mentions only</string>
+    <string name="all_new_messages">All new messages</string>
+    <string name="show_message_preview">Show message preview</string>
+    <string name="lock_screen_notifications">Lock-screen notifications</string>
+    <string name="lock_screen_notifications_explanation">Android controls whether these notifications and their sensitive content appear while the phone is locked.</string>
+    <string name="open_android_notification_settings">Open Android notification settings</string>
+    <string name="background_checks_need_connection">Connect to a channel before enabling background checks.</string>
+    <string name="notification_permission_denied">Notifications remain off. You can allow them later in Android Settings.</string>
+    <string name="background_checks_paused">Background checks paused</string>
+    <string name="open_app_to_reconnect">Open Mattermost Lite to reconnect your account.</string>
+    <string name="background_notifications_channel">Mattermost messages</string>
+    <string name="background_notifications_channel_description">Approximate background checks for new Mattermost messages</string>
+    <string name="you">You</string>
+    <string name="someone">Someone</string>
     <string name="message_hint">Message</string>
     <string name="mention_user_suggestion">@%1$s, %2$s</string>
     <string name="connecting">Connecting</string>
@@ -86,4 +110,8 @@
     <string name="suno_stop_loading">Cancel loading this song</string>
     <string name="suno_stop_playback">Stop %1$s</string>
     <string name="suno_retry_playback">Retry %1$s</string>
+    <plurals name="new_message_count">
+        <item quantity="one">%1$d new Mattermost message</item>
+        <item quantity="other">%1$d new Mattermost messages</item>
+    </plurals>
 </resources>

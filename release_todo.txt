@@ -14,7 +14,7 @@ Verified locally:
 - The release build succeeds.
 - All unit tests pass.
 - Android lint reports 0 errors and 12 warnings.
-- The generated Android App Bundle is approximately 2.9 MB.
+- The generated Android App Bundle is approximately 3.3 MB.
 - The generated release bundle is currently unsigned.
 - The app already targets Android 16 / API level 36.
 
@@ -317,6 +317,66 @@ Reference:
 https://support.google.com/googleplay/android-developer/answer/15748846
 
 
+10A. Optional 15-minute background message checks
+-------------------------------------------------
+
+What the user gets:
+
+- While the app is open, the WebSocket still delivers messages immediately.
+- While the app is closed or in the background, Android may run a lightweight
+  check approximately every 15 minutes. This is not real-time push: Doze,
+  battery restrictions, lack of connectivity, or vendor power management can
+  delay it substantially.
+- The default is Mentions only. The user can instead choose All new messages
+  or turn background checks off.
+- A single message appears as a normal Mattermost conversation notification
+  with the channel, sender, and message text. Several messages are grouped
+  into one conversation-style notification showing up to the five newest.
+- If Show message preview is off, notification bodies say "New message."
+- The lock-screen public version only says how many Mattermost messages are
+  new. Tapping opens the configured channel and scrolls to the newest notified
+  post when it is still in the loaded feed.
+
+Implementation checkpoints:
+
+[x] Background checks are explicitly opt-in and disabled by default.
+[x] Android 13+ notification permission is requested only when enabling them.
+[x] The in-app settings provide a direct shortcut to Android's Mattermost
+    notification-channel screen for lock-screen visibility and privacy.
+[x] The settings explain that 15 minutes is approximate rather than real-time.
+[x] Mentions only is the default; All new messages and preview privacy are
+    configurable.
+[x] One unique WorkManager periodic job is used with a connected-network
+    constraint and exponential retry backoff.
+[x] The worker exits before network activity while the app is in the
+    foreground or immediately after a foreground synchronization.
+[x] The worker creates only a short-timeout API client. It does not initialize
+    the feed UI, WebSocket, image cache, previews, audio, video, or downloads.
+[x] The Mattermost session token is encrypted with Android Keystore and reused.
+    A 401 triggers at most one password login and channel resolution.
+[x] A permanent 401/403 pauses authentication attempts and emits one generic
+    reconnect notification instead of retrying a bad password every 15 minutes.
+[x] The first run establishes a newest-post baseline and never alerts for old
+    history.
+[x] The persistent post-ID checkpoint is committed before notification and is
+    also advanced by foreground WebSocket/refresh mutations to avoid duplicates.
+[x] Own posts, thread replies, deleted posts, edited posts, and system posts are
+    excluded from notification candidates.
+[x] Notifications are text-only, batched, use a stable per-channel ID, have a
+    static monochrome icon, and expose only generic content on the lock screen.
+[x] Disabling checks or clearing the connection cancels the periodic work and
+    removes the encrypted background session/checkpoint.
+[x] Unit tests cover mention boundaries, filtering, order, all-message mode,
+    attachment-only text, and hidden previews.
+[x] On a real Android device, verify the disabled-by-default settings UI,
+    permission-on-enable prompt, unique WorkManager scheduling, and cancellation.
+[ ] Verify 15-minute timing, Doze delays, notification rendering/tap targeting,
+    password/session expiry, and battery/network consumption on real devices.
+[ ] Confirm the final Play listing and privacy/data-safety answers describe
+    periodic polling, encrypted local credentials/session state, and the lack
+    of real-time push.
+
+
 11. Prepare the Play Store listing
 ----------------------------------
 
@@ -340,8 +400,10 @@ The listing should clearly state:
 - Only HTTPS servers with system-trusted certificates are supported.
 - The app connects to one configured team/channel at a time.
 - Password-based Mattermost login is currently required.
-- Threads, reactions, multiple channels, offline history, background
-  notifications, push notifications, and SSO are not supported.
+- Threads, reactions, multiple channels, offline history, server push
+  notifications, and SSO are not supported.
+- Optional notifications use approximate 15-minute background polling and may
+  be delayed by Android. They are not real-time push notifications.
 - The minimum Android version is Android 10.
 
 References:

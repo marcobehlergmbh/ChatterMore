@@ -1,6 +1,7 @@
 package com.example.mattermostlite.network
 
 import com.example.mattermostlite.model.MattermostChannel
+import com.example.mattermostlite.model.MattermostChannelMember
 import com.example.mattermostlite.model.MattermostFile
 import com.example.mattermostlite.model.LinkPreview
 import com.example.mattermostlite.model.MattermostPost
@@ -76,10 +77,29 @@ internal fun parseChannel(value: JsonObject): MattermostChannel = MattermostChan
     id = value.string("id"),
     name = value.string("name"),
     displayName = value.string("display_name").ifBlank { value.string("name") },
+    teamId = value.string("team_id"),
+    type = value.string("type"),
+    lastPostAt = value.long("last_post_at"),
+    totalMessageCount = value.long("total_msg_count"),
+    deleteAt = value.long("delete_at"),
 )
 
 internal fun parseChannels(json: String): List<MattermostChannel> =
     mattermostJson.parseToJsonElement(json).jsonArray.map { parseChannel(it.jsonObject) }
+
+internal fun parseChannelMembers(json: String): List<MattermostChannelMember> =
+    mattermostJson.parseToJsonElement(json).jsonArray.mapNotNull { element ->
+        val value = element.objectOrNull() ?: return@mapNotNull null
+        val channelId = value.string("channel_id")
+        if (channelId.isBlank()) return@mapNotNull null
+        MattermostChannelMember(
+            channelId = channelId,
+            userId = value.string("user_id"),
+            messageCount = value.long("msg_count"),
+            mentionCount = value.long("mention_count"),
+            lastViewedAt = value.long("last_viewed_at"),
+        )
+    }
 
 internal fun parsePost(json: String): MattermostPost =
     parsePost(mattermostJson.parseToJsonElement(json).jsonObject)
@@ -222,6 +242,12 @@ internal fun userIdsBody(ids: Collection<String>): String =
 
 internal fun usernamesBody(usernames: Collection<String>): String =
     JsonArray(usernames.map(::JsonPrimitive)).toString()
+
+internal fun channelViewBody(channelId: String, previousChannelId: String?): String =
+    buildJsonObject {
+        put("channel_id", channelId)
+        previousChannelId?.takeIf(String::isNotBlank)?.let { put("prev_channel_id", it) }
+    }.toString()
 
 internal fun errorMessage(json: String): String = runCatching {
     mattermostJson.parseToJsonElement(json).jsonObject.string("message")

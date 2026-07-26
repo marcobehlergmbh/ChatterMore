@@ -3,6 +3,7 @@ package com.example.mattermostlite.network
 import com.example.mattermostlite.model.ChannelNotFoundException
 import com.example.mattermostlite.model.AuthenticatedServerConfig
 import com.example.mattermostlite.model.MattermostChannel
+import com.example.mattermostlite.model.MattermostChannelMember
 import com.example.mattermostlite.model.MattermostFile
 import com.example.mattermostlite.model.MattermostException
 import com.example.mattermostlite.model.MattermostPost
@@ -85,7 +86,7 @@ class MattermostApi(
         }
     }
 
-    private suspend fun resolveTeam(config: AuthenticatedServerConfig): MattermostTeam = try {
+    suspend fun resolveTeam(config: AuthenticatedServerConfig): MattermostTeam = try {
         parseTeam(
             execute(
                 request(config, apiUrl(config, "teams", "name", config.teamName)),
@@ -109,6 +110,47 @@ class MattermostApi(
                 "More than one team is displayed as \"${config.teamName}\". Enter its URL name instead.",
             )
         }
+    }
+
+    suspend fun channelsForUser(
+        config: AuthenticatedServerConfig,
+        userId: String,
+        teamId: String,
+    ): List<MattermostChannel> = parseChannels(
+        execute(
+            request(
+                config,
+                apiUrl(config, "users", userId, "teams", teamId, "channels"),
+            ),
+        ),
+    )
+
+    suspend fun channelMemberships(
+        config: AuthenticatedServerConfig,
+        userId: String,
+        teamId: String,
+    ): List<MattermostChannelMember> = parseChannelMembers(
+        execute(
+            request(
+                config,
+                apiUrl(config, "users", userId, "teams", teamId, "channels", "members"),
+            ),
+        ),
+    )
+
+    suspend fun viewChannel(
+        config: AuthenticatedServerConfig,
+        userId: String,
+        channelId: String,
+        previousChannelId: String?,
+    ) {
+        val body = channelViewBody(channelId, previousChannelId).toRequestBody(JSON_MEDIA_TYPE)
+        execute(
+            request(config, apiUrl(config, "channels", "members", userId, "view"))
+                .newBuilder()
+                .post(body)
+                .build(),
+        )
     }
 
     suspend fun posts(
@@ -290,7 +332,6 @@ class MattermostApi(
         require(url.scheme == "https") { "The server URL must use HTTPS" }
         require(url.query == null && url.fragment == null) { "The server URL cannot contain a query or fragment" }
         require(config.teamName.isNotBlank()) { "Enter a team name" }
-        require(config.channelName.isNotBlank()) { "Enter a channel name" }
         require(config.username.isNotBlank()) { "Enter a username" }
         require(config.password.isNotBlank()) { "Enter a password" }
         return config.copy(

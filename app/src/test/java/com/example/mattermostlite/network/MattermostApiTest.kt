@@ -19,6 +19,23 @@ import org.junit.Test
 
 class MattermostApiTest {
     @Test
+    fun `normalizes login without requiring a preselected channel`() {
+        val normalized = MattermostApi(OkHttpClient()).normalizedConfig(
+            ServerConfig(
+                baseUrl = "https://mattermost.example.com/",
+                teamName = " engineering ",
+                channelName = "",
+                username = " marco ",
+                password = "secret",
+            ),
+        )
+
+        assertEquals("", normalized.channelName)
+        assertEquals("engineering", normalized.teamName)
+        assertEquals("marco", normalized.username)
+    }
+
+    @Test
     fun `login exchanges credentials for a session used by authenticated requests`() = runBlocking {
         val requests = mutableListOf<CapturedRequest>()
         val client = OkHttpClient.Builder()
@@ -189,6 +206,69 @@ class MattermostApiTest {
     }
 
     @Test
+    fun `loads channel directory metadata in two bulk requests`() = runBlocking {
+        val requests = mutableListOf<CapturedRequest>()
+        val client = OkHttpClient.Builder()
+            .addInterceptor { chain ->
+                val request = chain.request()
+                requests += request.capture()
+                val body = when (request.url.encodedPath) {
+                    "/api/v4/users/me/teams/team/channels" ->
+                        """[{"id":"channel","name":"town-square","display_name":"Town Square","team_id":"team","type":"O","last_post_at":20,"total_msg_count":4}]"""
+                    "/api/v4/users/me/teams/team/channels/members" ->
+                        """[{"channel_id":"channel","user_id":"me","msg_count":3,"mention_count":1,"last_viewed_at":10}]"""
+                    else -> error("Unexpected request: ${request.url}")
+                }
+                Response.Builder()
+                    .request(request)
+                    .protocol(Protocol.HTTP_1_1)
+                    .code(200)
+                    .message("OK")
+                    .body(body.toResponseBody(JSON_MEDIA_TYPE))
+                    .build()
+            }
+            .build()
+        val api = MattermostApi(client)
+        val session = session()
+
+        val channels = api.channelsForUser(session, "me", "team")
+        val memberships = api.channelMemberships(session, "me", "team")
+
+        assertEquals(2, requests.size)
+        assertEquals("O", channels.single().type)
+        assertEquals(20L, channels.single().lastPostAt)
+        assertEquals(4L, channels.single().totalMessageCount)
+        assertEquals(3L, memberships.single().messageCount)
+        assertEquals(1L, memberships.single().mentionCount)
+    }
+
+    @Test
+    fun `view channel marks it read with the previous channel`() = runBlocking {
+        var captured: CapturedRequest? = null
+        val client = OkHttpClient.Builder()
+            .addInterceptor { chain ->
+                val request = chain.request()
+                captured = request.capture()
+                Response.Builder()
+                    .request(request)
+                    .protocol(Protocol.HTTP_1_1)
+                    .code(200)
+                    .message("OK")
+                    .body("""{"status":"OK"}""".toResponseBody(JSON_MEDIA_TYPE))
+                    .build()
+            }
+            .build()
+
+        MattermostApi(client).viewChannel(session(), "me", "next", "previous")
+
+        assertEquals("/api/v4/channels/members/me/view", captured?.path)
+        assertEquals("POST", captured?.method)
+        val body = mattermostJson.parseToJsonElement(requireNotNull(captured).body).jsonObject
+        assertEquals("next", body.string("channel_id"))
+        assertEquals("previous", body.string("prev_channel_id"))
+    }
+
+    @Test
     fun `resolves mention usernames in one authenticated request`() = runBlocking {
         var captured: CapturedRequest? = null
         val client = OkHttpClient.Builder()
@@ -338,6 +418,13 @@ class MattermostApiTest {
             body = buffer.readUtf8(),
         )
     }
+
+    private fun session() = AuthenticatedServerConfig(
+        baseUrl = "https://mattermost.example.com",
+        teamName = "engineering",
+        channelName = "",
+        token = "session-token",
+    )
 
     private data class CapturedRequest(
         val path: String,

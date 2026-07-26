@@ -3,12 +3,18 @@ package com.example.mattermostlite
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
+import com.example.mattermostlite.background.BackgroundNotificationMode
+import com.example.mattermostlite.background.BackgroundPollingScheduler
+import com.example.mattermostlite.background.BackgroundPollingSession
+import com.example.mattermostlite.background.BackgroundPollingSettings
+import com.example.mattermostlite.background.BackgroundPollingWorker
 import com.example.mattermostlite.data.ChannelRepository
 import com.example.mattermostlite.data.AttachmentSelection
 import com.example.mattermostlite.data.AttachmentStatus
 import com.example.mattermostlite.data.DraftAttachment
 import com.example.mattermostlite.data.IncomingShare
 import com.example.mattermostlite.model.ConnectionState
+import com.example.mattermostlite.model.AuthenticatedServerConfig
 import com.example.mattermostlite.model.ChannelNotFoundException
 import com.example.mattermostlite.model.DeliveryState
 import com.example.mattermostlite.model.FeedItem
@@ -16,6 +22,13 @@ import com.example.mattermostlite.model.LinkPreview
 import com.example.mattermostlite.model.FeedMutation
 import com.example.mattermostlite.model.MattermostException
 import com.example.mattermostlite.model.MattermostFile
+import com.example.mattermostlite.model.MattermostChannel
+import com.example.mattermostlite.model.MattermostUser
+import com.example.mattermostlite.model.ConversationMutation
+import com.example.mattermostlite.model.ConversationSummary
+import com.example.mattermostlite.model.InitializedDirectory
+import com.example.mattermostlite.model.MattermostTeam
+import com.example.mattermostlite.model.RememberedConversation
 import com.example.mattermostlite.model.ServerConfig
 import com.example.mattermostlite.model.TeamNotFoundException
 import com.example.mattermostlite.model.UploadCapabilities
@@ -43,6 +56,12 @@ sealed interface ScreenState {
         val config: ServerConfig? = null,
         val connecting: Boolean = false,
         val error: String? = null,
+    ) : ScreenState
+
+    data class Overview(
+        val teamId: String,
+        val teamTitle: String,
+        val conversations: List<ConversationSummary>,
     ) : ScreenState
 
     data class Conversation(
@@ -82,6 +101,7 @@ class MainViewModel(
         api = container.api,
         socket = container.socket,
         scope = viewModelScope,
+        conversationCache = container.conversationCache,
         unsupportedMessage = unsupportedMessage,
     )
     private val _screen = MutableStateFlow<ScreenState>(ScreenState.Loading)
@@ -94,10 +114,16 @@ class MainViewModel(
     private var attachmentGeneration = 0
     private var benchmarkItems: List<FeedItem>? = null
     private var currentUserId: String? = null
+    private var authenticatedConfig: AuthenticatedServerConfig? = null
+    private var configuredChannel: MattermostChannel? = null
+    private var authenticatedUser: MattermostUser? = null
+    private var authenticatedTeam: MattermostTeam? = null
     private var loadingOlder = false
     private var conversationRequestGeneration = 0
-    private var configuredConversationScreen: ScreenState.Conversation? = null
+    private var backgroundSettingsGeneration = 0
     private var lastReadyConversationScreen: ScreenState.Conversation? = null
+    private var overviewScreen: ScreenState.Overview? = null
+    private val overviewConversations = mutableListOf<ConversationSummary>()
 
     val screen: StateFlow<ScreenState> = _screen.asStateFlow()
     val messageEdit: StateFlow<MessageEditState?> = _messageEdit.asStateFlow()
@@ -105,6 +131,7 @@ class MainViewModel(
     val incomingShares: StateFlow<List<IncomingShare>> = _incomingShares.asStateFlow()
     val composerMessages: SharedFlow<String> = _composerMessages.asSharedFlow()
     val mutations: SharedFlow<FeedMutation> = repository.mutations
+    val conversationMutations: SharedFlow<ConversationMutation> = repository.conversationMutations
     val connectionState: StateFlow<ConnectionState> = repository.connectionState
     val refreshing: StateFlow<Boolean> = repository.refreshing
     val userPresence = repository.userPresence
@@ -117,11 +144,51 @@ class MainViewModel(
                 _composer.update { it.copy(capabilities = capabilities) }
             }
         }
+        viewModelScope.launch {
+            repository.conversationMutations.collect { mutation ->
+                overviewScreen ?: return@collect
+                when (mutation) {
+                    is ConversationMutation.Replace -> {
+                        overviewConversations.clear()
+                        overviewConversations.addAll(mutation.conversations)
+                    }
+                    is ConversationMutation.Update -> {
+                        val index = overviewConversations.indexOfFirst {
+                            it.id == mutation.conversation.id
+                        }
+                        if (index < 0) {
+                            overviewConversations += mutation.conversation
+                        } else {
+                            overviewConversations[index] = mutation.conversation
+                        }
+                    }
+                }
+            }
+        }
+        viewModelScope.launch {
+            repository.mutations.collect { mutation ->
+                if (!container.configStore.backgroundPollingSettings().enabled) return@collect
+                val channelId = configuredChannel?.id ?: return@collect
+                mutation.itemsForCheckpoint()
+                    .asSequence()
+                    .filter { it.channelId == channelId }
+                    .filter { it.serverId != null }
+                    .maxWithOrNull(compareBy(FeedItem::createAt, FeedItem::serverId))
+                    ?.let { item ->
+                        container.configStore.advanceBackgroundCheckpoint(
+                            postId = requireNotNull(item.serverId),
+                            createAt = item.createAt,
+                            foregroundSync = true,
+                        )
+                    }
+            }
+        }
         if (BuildConfig.BENCHMARK_FIXTURES) {
             _screen.value = ScreenState.Setup()
         } else {
             val stored = container.configStore.load()
             if (stored == null) {
+                BackgroundPollingScheduler.reconcile(container.context)
                 _screen.value = ScreenState.Setup(
                     config = container.configStore.loadRememberedServer()?.asLoginConfig(),
                 )
@@ -133,35 +200,55 @@ class MainViewModel(
 
     fun connect(config: ServerConfig, persist: Boolean = true) {
         if ((_screen.value as? ScreenState.Setup)?.connecting == true) return
+        if (persist && container.configStore.backgroundPollingSettings().enabled) {
+            backgroundSettingsGeneration++
+            BackgroundPollingScheduler.cancel(container.context)
+            container.configStore.setBackgroundPollingSettings(
+                container.configStore.backgroundPollingSettings().copy(enabled = false),
+            )
+        }
         conversationRequestGeneration++
+        val initializationGeneration = conversationRequestGeneration
         clearAttachments()
         _messageEdit.value = null
         _screen.value = ScreenState.Setup(config = config, connecting = true)
         viewModelScope.launch {
             runCatching {
                 val normalized = container.api.normalizedConfig(config)
-                repository.initialize(normalized)
+                repository.initialize(normalized) { directory ->
+                    showInitializedDirectory(
+                        directory = directory,
+                        selectInitialScreen =
+                            initializationGeneration == conversationRequestGeneration,
+                        restoreRememberedConversation = false,
+                    )
+                }
             }
-                .onSuccess { (channel, user, authenticatedConfig) ->
+                .onSuccess { directory ->
                     val normalized = container.api.normalizedConfig(config)
-                    currentUserId = user.id
-                    container.imageLoader.configure(authenticatedConfig)
+                    showInitializedDirectory(
+                        directory = directory,
+                        selectInitialScreen =
+                            initializationGeneration == conversationRequestGeneration,
+                        restoreRememberedConversation = true,
+                    )
                     if (persist) {
                         container.configStore.save(normalized)
                     } else {
                         container.configStore.rememberServer(normalized)
                     }
-                    val conversationScreen = ScreenState.Conversation(
-                        id = channel.id,
-                        title = channel.displayName.ifBlank { channel.name },
-                    )
-                    configuredConversationScreen = conversationScreen
-                    lastReadyConversationScreen = conversationScreen
-                    _screen.value = conversationScreen
                 }
                 .onFailure { error ->
                     currentUserId = null
-                    if (!persist) container.configStore.clearCredentials()
+                    authenticatedConfig = null
+                    configuredChannel = null
+                    authenticatedUser = null
+                    authenticatedTeam = null
+                    overviewScreen = null
+                    if (!persist) {
+                        BackgroundPollingScheduler.cancel(container.context)
+                        container.configStore.clearCredentials()
+                    }
                     _screen.value = ScreenState.Setup(
                         config = config.copy(password = ""),
                         error = userMessage(error),
@@ -171,14 +258,20 @@ class MainViewModel(
     }
 
     fun clearConnection() {
+        backgroundSettingsGeneration++
         clearAttachments()
         repository.close()
         conversationRequestGeneration++
         currentUserId = null
-        configuredConversationScreen = null
+        authenticatedConfig = null
+        configuredChannel = null
+        authenticatedUser = null
+        authenticatedTeam = null
+        overviewScreen = null
         lastReadyConversationScreen = null
         _messageEdit.value = null
         container.imageLoader.configure(null)
+        BackgroundPollingScheduler.cancel(container.context)
         container.configStore.clearCredentials()
         _screen.value = ScreenState.Setup(
             config = container.configStore.loadRememberedServer()?.asLoginConfig(),
@@ -187,6 +280,40 @@ class MainViewModel(
 
     fun setForeground(foreground: Boolean) {
         repository.setForeground(foreground)
+    }
+
+    fun backgroundPollingSettings(): BackgroundPollingSettings =
+        container.configStore.backgroundPollingSettings()
+
+    fun setBackgroundPollingPreferences(
+        mode: BackgroundNotificationMode,
+        showPreview: Boolean,
+    ) {
+        val current = container.configStore.backgroundPollingSettings()
+        container.configStore.setBackgroundPollingSettings(
+            current.copy(mode = mode, showPreview = showPreview),
+        )
+    }
+
+    fun setBackgroundPollingEnabled(enabled: Boolean): Boolean {
+        val generation = ++backgroundSettingsGeneration
+        if (!enabled) {
+            val current = container.configStore.backgroundPollingSettings()
+            BackgroundPollingScheduler.cancel(container.context)
+            container.configStore.setBackgroundPollingSettings(current.copy(enabled = false))
+            return true
+        }
+        val config = authenticatedConfig ?: return false
+        val channel = configuredChannel ?: return false
+        val user = authenticatedUser ?: return false
+        viewModelScope.launch {
+            synchronizeBackgroundSession(config, channel, user)
+            if (generation != backgroundSettingsGeneration) return@launch
+            val current = container.configStore.backgroundPollingSettings()
+            container.configStore.setBackgroundPollingSettings(current.copy(enabled = true))
+            BackgroundPollingScheduler.schedule(container.context)
+        }
+        return true
     }
 
     fun enableBenchmarkFixture(count: Int) {
@@ -231,16 +358,59 @@ class MainViewModel(
             id = "benchmark",
             title = "Performance fixture",
         )
-        configuredConversationScreen = fixtureScreen
         lastReadyConversationScreen = fixtureScreen
         _screen.value = fixtureScreen
+    }
+
+    fun openConversation(summary: ConversationSummary) {
+        if (BuildConfig.BENCHMARK_FIXTURES || summary.id.isBlank()) return
+        val requestGeneration = ++conversationRequestGeneration
+        clearConversationBoundComposerState()
+        _screen.value = ScreenState.Conversation(
+            id = "loading:${summary.id}:$requestGeneration",
+            title = summary.title,
+            canNavigateBack = true,
+            peerUserId = summary.peerUserId,
+            loading = true,
+        )
+        viewModelScope.launch {
+            runCatching { repository.openConversation(summary.id) }
+                .onSuccess { conversation ->
+                    if (requestGeneration != conversationRequestGeneration) return@onSuccess
+                    if (conversation == null) {
+                        overviewScreen?.let { _screen.value = it }
+                        return@onSuccess
+                    }
+                    configuredChannel = conversation.channel
+                    val screen = ScreenState.Conversation(
+                        id = conversation.channelId,
+                        title = conversation.title,
+                        canNavigateBack = true,
+                        peerUserId = (conversation as? com.example.mattermostlite.model.Conversation.DirectMessage)
+                            ?.peer
+                            ?.id,
+                    )
+                    lastReadyConversationScreen = screen
+                    rememberSelectedConversation(conversation.channelId)
+                    _screen.value = screen
+                    synchronizeSelectedBackgroundSession()
+                }
+                .onFailure { error ->
+                    if (error is CancellationException) throw error
+                    if (requestGeneration != conversationRequestGeneration) return@onFailure
+                    overviewScreen?.let { _screen.value = it }
+                    _composerMessages.emit(
+                        error.message ?: "The conversation could not be opened.",
+                    )
+                }
+        }
     }
 
     fun openDirectMessage(userId: String, title: String) {
         if (BuildConfig.BENCHMARK_FIXTURES || userId.isBlank()) return
         val current = _screen.value as? ScreenState.Conversation ?: return
         if (!current.loading && current.peerUserId == userId) return
-        val fallback = lastReadyConversationScreen ?: current.takeUnless { it.loading } ?: return
+        val fallback = lastReadyConversationScreen ?: current.takeUnless { it.loading }
         val requestGeneration = ++conversationRequestGeneration
         clearConversationBoundComposerState()
         _screen.value = ScreenState.Conversation(
@@ -255,7 +425,7 @@ class MainViewModel(
                 .onSuccess { conversation ->
                     if (requestGeneration != conversationRequestGeneration) return@onSuccess
                     if (conversation == null) {
-                        _screen.value = fallback
+                        _screen.value = fallback ?: overviewScreen ?: return@onSuccess
                         return@onSuccess
                     }
                     val screen = ScreenState.Conversation(
@@ -265,12 +435,15 @@ class MainViewModel(
                         peerUserId = conversation.peer.id,
                     )
                     lastReadyConversationScreen = screen
+                    configuredChannel = conversation.channel
+                    rememberSelectedConversation(conversation.channelId)
                     _screen.value = screen
+                    synchronizeSelectedBackgroundSession()
                 }
                 .onFailure { error ->
                     if (error is CancellationException) throw error
                     if (requestGeneration != conversationRequestGeneration) return@onFailure
-                    _screen.value = fallback
+                    _screen.value = fallback ?: overviewScreen ?: return@onFailure
                     _composerMessages.emit(
                         when (error) {
                             is MattermostException -> when (error.statusCode) {
@@ -286,44 +459,13 @@ class MainViewModel(
         }
     }
 
-    fun returnToConfiguredChannel() {
+    fun returnToOverview() {
         if (BuildConfig.BENCHMARK_FIXTURES) return
-        val configured = configuredConversationScreen ?: return
-        val current = _screen.value as? ScreenState.Conversation ?: return
-        if (!current.canNavigateBack && !current.loading) return
-        val fallback = lastReadyConversationScreen ?: current
-        val requestGeneration = ++conversationRequestGeneration
+        val overview = overviewScreen ?: return
+        conversationRequestGeneration++
         clearConversationBoundComposerState()
-        _screen.value = configured.copy(
-            id = "loading-channel:$requestGeneration",
-            loading = true,
-        )
-        viewModelScope.launch {
-            runCatching { repository.returnToConfiguredChannel() }
-                .onSuccess { conversation ->
-                    if (requestGeneration != conversationRequestGeneration) return@onSuccess
-                    if (conversation == null) {
-                        _screen.value = fallback
-                        return@onSuccess
-                    }
-                    val screen = configured.copy(
-                        id = conversation.channelId,
-                        title = conversation.title,
-                        loading = false,
-                    )
-                    configuredConversationScreen = screen
-                    lastReadyConversationScreen = screen
-                    _screen.value = screen
-                }
-                .onFailure { error ->
-                    if (error is CancellationException) throw error
-                    if (requestGeneration != conversationRequestGeneration) return@onFailure
-                    _screen.value = fallback
-                    _composerMessages.emit(
-                        error.message ?: "The configured channel could not be restored.",
-                    )
-                }
-        }
+        repository.leaveConversation()
+        _screen.value = overview
     }
 
     suspend fun snapshot(): List<FeedItem> = benchmarkItems ?: repository.snapshot()
@@ -344,6 +486,10 @@ class MainViewModel(
 
     fun refreshLatest() {
         viewModelScope.launch { runCatching { repository.refreshLatest() } }
+    }
+
+    fun setConversationAtLatest(value: Boolean) {
+        repository.setActiveConversationAtLatest(value)
     }
 
     fun addAttachments(selections: List<AttachmentSelection>): Boolean {
@@ -610,6 +756,91 @@ class MainViewModel(
         _messageEdit.value = null
     }
 
+    private fun showInitializedDirectory(
+        directory: InitializedDirectory,
+        selectInitialScreen: Boolean,
+        restoreRememberedConversation: Boolean,
+    ) {
+        currentUserId = directory.user.id
+        authenticatedConfig = directory.config
+        authenticatedUser = directory.user
+        authenticatedTeam = directory.team
+        container.imageLoader.configure(directory.config)
+        overviewConversations.clear()
+        overviewConversations.addAll(directory.conversations)
+        val overview = ScreenState.Overview(
+            teamId = directory.team.id,
+            teamTitle = directory.team.displayName.ifBlank { directory.team.name },
+            conversations = overviewConversations,
+        )
+        overviewScreen = overview
+        if (!selectInitialScreen) return
+        _screen.value = overview
+        if (!restoreRememberedConversation) return
+        val rememberedChannelId = container.configStore.loadRememberedConversation()
+            ?.channelIdFor(
+                baseUrl = directory.config.baseUrl,
+                teamId = directory.team.id,
+                userId = directory.user.id,
+            )
+            ?: return
+        directory.conversations
+            .firstOrNull { it.id == rememberedChannelId }
+            ?.let(::openConversation)
+    }
+
+    private fun rememberSelectedConversation(channelId: String) {
+        if (channelId.isBlank()) return
+        val config = authenticatedConfig ?: return
+        val team = authenticatedTeam ?: return
+        val user = authenticatedUser ?: return
+        container.configStore.rememberConversation(
+            RememberedConversation(
+                baseUrl = config.baseUrl,
+                teamId = team.id,
+                userId = user.id,
+                channelId = channelId,
+            ),
+        )
+    }
+
+    private fun synchronizeSelectedBackgroundSession() {
+        if (!container.configStore.backgroundPollingSettings().enabled) return
+        val config = authenticatedConfig ?: return
+        val channel = configuredChannel ?: return
+        val user = authenticatedUser ?: return
+        viewModelScope.launch { synchronizeBackgroundSession(config, channel, user) }
+    }
+
+    private suspend fun synchronizeBackgroundSession(
+        config: AuthenticatedServerConfig,
+        channel: MattermostChannel,
+        user: MattermostUser,
+    ) {
+        val newest = repository.snapshot()
+            .asSequence()
+            .filter { it.channelId == channel.id && it.serverId != null }
+            .maxWithOrNull(compareBy(FeedItem::createAt, FeedItem::serverId))
+        container.configStore.saveBackgroundPollingSession(
+            BackgroundPollingSession(
+                config = config,
+                channelId = channel.id,
+                currentUserId = user.id,
+                currentUsername = user.username,
+                checkpointPostId = newest?.serverId,
+                checkpointCreateAt = newest?.createAt ?: 0L,
+            ),
+        )
+        BackgroundPollingWorker.cancelNotification(container.context, channel.id)
+        newest?.serverId?.let {
+            container.configStore.advanceBackgroundCheckpoint(
+                postId = it,
+                createAt = newest.createAt,
+                foregroundSync = true,
+            )
+        }
+    }
+
     private fun attachmentMessage(error: Throwable): String = when (error) {
         is MattermostException -> when (error.statusCode) {
             403 -> "This account is not allowed to upload files."
@@ -660,3 +891,11 @@ class MainViewModel(
 
 private fun ScreenState.readyConversation(): ScreenState.Conversation? =
     (this as? ScreenState.Conversation)?.takeUnless { it.loading }
+
+private fun FeedMutation.itemsForCheckpoint(): List<FeedItem> = when (this) {
+    is FeedMutation.Replace -> items
+    is FeedMutation.Prepend -> items
+    is FeedMutation.Insert -> listOf(item)
+    is FeedMutation.Update -> listOf(item)
+    is FeedMutation.Remove -> emptyList()
+}

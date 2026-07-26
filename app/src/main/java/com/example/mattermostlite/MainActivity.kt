@@ -1,5 +1,6 @@
 package com.example.mattermostlite
 
+import android.Manifest
 import android.app.AlertDialog
 import android.app.Dialog
 import android.app.DownloadManager
@@ -7,20 +8,27 @@ import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.os.Environment
 import android.os.SystemClock
+import android.provider.Settings
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.view.inputmethod.InputMethodManager
 import android.widget.Button
+import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.ImageButton
+import android.widget.LinearLayout
 import android.widget.ListPopupWindow
 import android.widget.PopupWindow
 import android.widget.ProgressBar
+import android.widget.RadioButton
+import android.widget.RadioGroup
+import android.widget.Switch
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.ComponentActivity
@@ -51,6 +59,7 @@ import androidx.media3.ui.PlayerView
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import com.example.mattermostlite.model.ConnectionState
+import com.example.mattermostlite.model.ConversationMutation
 import com.example.mattermostlite.model.DeliveryState
 import com.example.mattermostlite.model.FeedMutation
 import com.example.mattermostlite.model.FeedImage
@@ -59,12 +68,16 @@ import com.example.mattermostlite.model.FeedItem
 import com.example.mattermostlite.model.LinkPreview
 import com.example.mattermostlite.model.MattermostUser
 import com.example.mattermostlite.model.ServerConfig
+import com.example.mattermostlite.background.AppVisibility
+import com.example.mattermostlite.background.BackgroundNotificationMode
+import com.example.mattermostlite.background.BackgroundPollingWorker
 import com.example.mattermostlite.data.AttachmentSelection
 import com.example.mattermostlite.data.IncomingShare
 import com.example.mattermostlite.data.IncomingShareParser
 import com.example.mattermostlite.data.combineSharedDraftText
 import com.example.mattermostlite.network.MattermostImageLoader
 import com.example.mattermostlite.ui.DraftAttachmentAdapter
+import com.example.mattermostlite.ui.ConversationAdapter
 import com.example.mattermostlite.ui.FeedAdapter
 import com.example.mattermostlite.ui.HistoryPrefetchPolicy
 import com.example.mattermostlite.ui.DownloadFileName
@@ -104,15 +117,19 @@ class MainActivity : ComponentActivity() {
     }
 
     private lateinit var setupPanel: View
+    private lateinit var overviewPanel: View
     private lateinit var channelPanel: View
     private lateinit var serverUrl: EditText
     private lateinit var teamName: EditText
-    private lateinit var channelName: EditText
     private lateinit var username: EditText
     private lateinit var password: EditText
     private lateinit var connectButton: Button
     private lateinit var setupProgress: ProgressBar
     private lateinit var setupError: TextView
+    private lateinit var overviewTitle: TextView
+    private lateinit var overviewConnectionStatus: TextView
+    private lateinit var conversationList: RecyclerView
+    private lateinit var overviewEmpty: TextView
     private lateinit var conversationBackButton: ImageButton
     private lateinit var channelTitle: TextView
     private lateinit var connectionStatus: TextView
@@ -129,6 +146,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var newMessagesButton: Button
     private lateinit var layoutManager: LinearLayoutManager
     private lateinit var adapter: FeedAdapter
+    private lateinit var conversationAdapter: ConversationAdapter
     private lateinit var draftAttachmentAdapter: DraftAttachmentAdapter
     private lateinit var mentionSuggestionAdapter: MentionSuggestionAdapter
     private lateinit var mentionSuggestions: ListPopupWindow
@@ -152,7 +170,7 @@ class MainActivity : ComponentActivity() {
     }
     private val conversationBackCallback = object : OnBackPressedCallback(false) {
         override fun handleOnBackPressed() {
-            returnToConfiguredChannel()
+            returnToOverview()
         }
     }
     private val galleryLauncher = registerForActivityResult(
@@ -171,6 +189,25 @@ class MainActivity : ComponentActivity() {
     private val videoCaptureLauncher = registerForActivityResult(
         ActivityResultContracts.CaptureVideo(),
     ) { saved -> completeCapture(saved) }
+    private val notificationPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        val toggle = pendingBackgroundSwitch
+        pendingBackgroundSwitch = null
+        if (granted) {
+            if (!viewModel.setBackgroundPollingEnabled(true)) {
+                toggle?.isChecked = false
+                Toast.makeText(
+                    this,
+                    R.string.background_checks_need_connection,
+                    Toast.LENGTH_LONG,
+                ).show()
+            }
+        } else {
+            toggle?.isChecked = false
+            Toast.makeText(this, R.string.notification_permission_denied, Toast.LENGTH_LONG).show()
+        }
+    }
     private val imageLoader: MattermostImageLoader by lazy {
         (application as MattermostLiteApplication).container.imageLoader
     }
@@ -187,6 +224,8 @@ class MainActivity : ComponentActivity() {
     private var renderedEditingPostId: String? = null
     private var editFocusAnchor: EditFocusAnchor? = null
     private var anchoringEditSubmission = false
+    private var pendingBackgroundSwitch: Switch? = null
+    private var pendingNotificationPostId: String? = null
     private val releaseEditFocusAnchor = Runnable { editFocusAnchor = null }
     private val refreshThreshold by lazy { 48f * resources.displayMetrics.density }
 
@@ -201,10 +240,12 @@ class MainActivity : ComponentActivity() {
         configureAttachmentComposer()
         configureMentionAutocomplete()
         configureActions()
+        configureConversationOverview()
         configureFeed()
         pendingScrollAnchor = savedInstanceState?.scrollAnchor()
         pendingImageRestore = savedInstanceState?.fullscreenImageRestore()
         pendingVideoRestore = savedInstanceState?.videoPlaybackRestore()
+        pendingNotificationPostId = intent.consumeNotificationPostId()
         pendingCapture = savedInstanceState
             ?.getString(STATE_CAPTURE_URI)
             ?.let(Uri::parse)
@@ -219,11 +260,22 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
+        intent.consumeNotificationPostId()?.let {
+            pendingNotificationPostId = it
+            val conversation = viewModel.screen.value as? ScreenState.Conversation
+            if (conversation?.canNavigateBack == true) {
+                viewModel.returnToOverview()
+            } else {
+                viewModel.refreshLatest()
+            }
+            messageList.post(::scrollToPendingNotification)
+        }
         acceptIncomingShareIntent(intent)
     }
 
     override fun onStart() {
         super.onStart()
+        AppVisibility.setForeground(true)
         viewModel.setForeground(true)
         if (
             renderedConversationId != null &&
@@ -244,6 +296,7 @@ class MainActivity : ComponentActivity() {
         fullscreenVideoDialog?.dismiss()
         sunoController.stop()
         viewModel.setForeground(false)
+        AppVisibility.setForeground(false)
         super.onStop()
     }
 
@@ -275,15 +328,19 @@ class MainActivity : ComponentActivity() {
 
     private fun bindViews() {
         setupPanel = findViewById(R.id.setupPanel)
+        overviewPanel = findViewById(R.id.overviewPanel)
         channelPanel = findViewById(R.id.channelPanel)
         serverUrl = findViewById(R.id.serverUrl)
         teamName = findViewById(R.id.teamName)
-        channelName = findViewById(R.id.channelName)
         username = findViewById(R.id.username)
         password = findViewById(R.id.password)
         connectButton = findViewById(R.id.connectButton)
         setupProgress = findViewById(R.id.setupProgress)
         setupError = findViewById(R.id.setupError)
+        overviewTitle = findViewById(R.id.overviewTitle)
+        overviewConnectionStatus = findViewById(R.id.overviewConnectionStatus)
+        conversationList = findViewById(R.id.conversationList)
+        overviewEmpty = findViewById(R.id.overviewEmpty)
         conversationBackButton = findViewById(R.id.conversationBackButton)
         channelTitle = findViewById(R.id.channelTitle)
         connectionStatus = findViewById(R.id.connectionStatus)
@@ -333,7 +390,7 @@ class MainActivity : ComponentActivity() {
                 ServerConfig(
                     baseUrl = serverUrl.text.toString(),
                     teamName = teamName.text.toString(),
-                    channelName = channelName.text.toString(),
+                    channelName = "",
                     username = username.text.toString(),
                     password = password.text.toString(),
                 ),
@@ -353,25 +410,185 @@ class MainActivity : ComponentActivity() {
             renderMentionSuggestions()
         }
         cancelEditButton.setOnClickListener { viewModel.cancelEdit() }
-        conversationBackButton.setOnClickListener { returnToConfiguredChannel() }
+        conversationBackButton.setOnClickListener { returnToOverview() }
         findViewById<ImageButton>(R.id.settingsButton).setOnClickListener {
-            AlertDialog.Builder(this)
-                .setTitle(R.string.change_connection)
-                .setMessage(R.string.clear_connection_prompt)
-                .setNegativeButton(android.R.string.cancel, null)
-                .setPositiveButton(android.R.string.ok) { _, _ ->
-                    adapter.replace(emptyList())
-                    renderedConversationId = null
-                    channelName.text.clear()
-                    password.text.clear()
-                    viewModel.clearConnection()
-                }
-                .show()
+            showConnectionSettings()
+        }
+        findViewById<ImageButton>(R.id.overviewSettingsButton).setOnClickListener {
+            showConnectionSettings()
         }
         newMessagesButton.setOnClickListener {
             scrollToBottom(smooth = false)
             newMessagesButton.isVisible = false
         }
+    }
+
+    private fun configureConversationOverview() {
+        conversationAdapter = ConversationAdapter(imageLoader, viewModel::openConversation)
+        conversationList.apply {
+            layoutManager = LinearLayoutManager(this@MainActivity)
+            adapter = conversationAdapter
+            setHasFixedSize(true)
+        }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun showConnectionSettings() {
+        val spacing = (16 * resources.displayMetrics.density).toInt()
+        val settings = viewModel.backgroundPollingSettings()
+        val content = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(spacing, spacing / 2, spacing, 0)
+        }
+        val backgroundToggle = Switch(this).apply {
+            text = getString(R.string.background_message_checks)
+            isChecked = settings.enabled
+        }
+        val explanation = TextView(this).apply {
+            setText(R.string.background_message_checks_explanation)
+            setTextColor(ContextCompat.getColor(this@MainActivity, R.color.text_secondary))
+            setPadding(0, 0, 0, spacing)
+        }
+        val notifyFor = TextView(this).apply {
+            setText(R.string.notify_for)
+            setTextColor(ContextCompat.getColor(this@MainActivity, R.color.text_primary))
+        }
+        val mentions = RadioButton(this).apply {
+            id = View.generateViewId()
+            setText(R.string.mentions_only)
+        }
+        val allMessages = RadioButton(this).apply {
+            id = View.generateViewId()
+            setText(R.string.all_new_messages)
+        }
+        val modeGroup = RadioGroup(this).apply {
+            orientation = RadioGroup.VERTICAL
+            addView(mentions)
+            addView(allMessages)
+            check(
+                if (settings.mode == BackgroundNotificationMode.MENTIONS) {
+                    mentions.id
+                } else {
+                    allMessages.id
+                },
+            )
+        }
+        val preview = CheckBox(this).apply {
+            setText(R.string.show_message_preview)
+            isChecked = settings.showPreview
+        }
+        val lockScreenTitle = TextView(this).apply {
+            setText(R.string.lock_screen_notifications)
+            setTextColor(ContextCompat.getColor(this@MainActivity, R.color.text_primary))
+            setPadding(0, spacing / 2, 0, 0)
+        }
+        val lockScreenExplanation = TextView(this).apply {
+            setText(R.string.lock_screen_notifications_explanation)
+            setTextColor(ContextCompat.getColor(this@MainActivity, R.color.text_secondary))
+        }
+        val openNotificationSettings = Button(this).apply {
+            setText(R.string.open_android_notification_settings)
+            setOnClickListener { openBackgroundNotificationSettings() }
+        }
+        content.addView(backgroundToggle)
+        content.addView(explanation)
+        content.addView(notifyFor)
+        content.addView(modeGroup)
+        content.addView(preview)
+        content.addView(lockScreenTitle)
+        content.addView(lockScreenExplanation)
+        content.addView(openNotificationSettings)
+
+        fun updatePreferenceControls(enabled: Boolean) {
+            notifyFor.isEnabled = enabled
+            mentions.isEnabled = enabled
+            allMessages.isEnabled = enabled
+            preview.isEnabled = enabled
+        }
+        updatePreferenceControls(settings.enabled)
+        modeGroup.setOnCheckedChangeListener { _, checkedId ->
+            viewModel.setBackgroundPollingPreferences(
+                mode = if (checkedId == allMessages.id) {
+                    BackgroundNotificationMode.ALL
+                } else {
+                    BackgroundNotificationMode.MENTIONS
+                },
+                showPreview = preview.isChecked,
+            )
+        }
+        preview.setOnCheckedChangeListener { _, checked ->
+            viewModel.setBackgroundPollingPreferences(
+                mode = if (allMessages.isChecked) {
+                    BackgroundNotificationMode.ALL
+                } else {
+                    BackgroundNotificationMode.MENTIONS
+                },
+                showPreview = checked,
+            )
+        }
+        backgroundToggle.setOnCheckedChangeListener { button, checked ->
+            updatePreferenceControls(checked)
+            if (!checked) {
+                viewModel.setBackgroundPollingEnabled(false)
+                return@setOnCheckedChangeListener
+            }
+            if (
+                Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                ContextCompat.checkSelfPermission(
+                    this,
+                    Manifest.permission.POST_NOTIFICATIONS,
+                ) != android.content.pm.PackageManager.PERMISSION_GRANTED
+            ) {
+                pendingBackgroundSwitch = button as Switch
+                notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+            } else if (!viewModel.setBackgroundPollingEnabled(true)) {
+                button.isChecked = false
+                Toast.makeText(
+                    this,
+                    R.string.background_checks_need_connection,
+                    Toast.LENGTH_LONG,
+                ).show()
+            }
+        }
+
+        AlertDialog.Builder(this)
+            .setTitle(R.string.connection_settings)
+            .setView(content)
+            .setNegativeButton(R.string.change_connection) { _, _ -> confirmClearConnection() }
+            .setPositiveButton(android.R.string.ok, null)
+            .show()
+    }
+
+    private fun openBackgroundNotificationSettings() {
+        BackgroundPollingWorker.createNotificationChannel(this)
+        val channelSettings = Intent(Settings.ACTION_CHANNEL_NOTIFICATION_SETTINGS).apply {
+            putExtra(Settings.EXTRA_APP_PACKAGE, packageName)
+            putExtra(Settings.EXTRA_CHANNEL_ID, BackgroundPollingWorker.CHANNEL_ID)
+        }
+        try {
+            startActivity(channelSettings)
+        } catch (_: ActivityNotFoundException) {
+            startActivity(
+                Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
+                    putExtra(Settings.EXTRA_APP_PACKAGE, packageName)
+                },
+            )
+        }
+    }
+
+    private fun confirmClearConnection() {
+        AlertDialog.Builder(this)
+            .setTitle(R.string.change_connection)
+            .setMessage(R.string.clear_connection_prompt)
+            .setNegativeButton(android.R.string.cancel, null)
+            .setPositiveButton(android.R.string.ok) { _, _ ->
+                adapter.replace(emptyList())
+                conversationAdapter.replace(emptyList())
+                renderedConversationId = null
+                password.text.clear()
+                viewModel.clearConnection()
+            }
+            .show()
     }
 
     private fun configureAttachmentComposer() {
@@ -604,7 +821,9 @@ class MainActivity : ComponentActivity() {
                 ) {
                     viewModel.loadOlder()
                 }
-                if (!recyclerView.canScrollVertically(1)) newMessagesButton.isVisible = false
+                val atLatest = !recyclerView.canScrollVertically(1)
+                viewModel.setConversationAtLatest(atLatest)
+                if (atLatest) newMessagesButton.isVisible = false
             }
         })
 
@@ -641,6 +860,7 @@ class MainActivity : ComponentActivity() {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
                 launch { viewModel.screen.collect(::renderScreen) }
                 launch { viewModel.mutations.collect(::applyMutation) }
+                launch { viewModel.conversationMutations.collect(conversationAdapter::apply) }
                 launch { viewModel.connectionState.collect(::renderConnection) }
                 launch { viewModel.userPresence.collect(adapter::updatePresence) }
                 launch { viewModel.mentionContext.collect(adapter::updateMentionContext) }
@@ -692,13 +912,13 @@ class MainActivity : ComponentActivity() {
         viewModel.openDirectMessage(userId, title)
     }
 
-    private fun returnToConfiguredChannel() {
+    private fun returnToOverview() {
         dismissMentionSuggestions()
         setAttachmentActionsVisible(false)
         pendingScrollAnchor = null
         normalDraftAfterEdit = null
         messageInput.text.clear()
-        viewModel.returnToConfiguredChannel()
+        viewModel.returnToOverview()
     }
 
     private fun submitMessageEdit(message: String) {
@@ -808,6 +1028,7 @@ class MainActivity : ComponentActivity() {
                 conversationBackCallback.isEnabled = false
                 dismissMentionSuggestions()
                 setupPanel.isVisible = true
+                overviewPanel.isVisible = false
                 channelPanel.isVisible = false
                 setSetupEnabled(false)
                 setupProgress.isVisible = true
@@ -817,6 +1038,7 @@ class MainActivity : ComponentActivity() {
                 conversationBackCallback.isEnabled = false
                 dismissMentionSuggestions()
                 setupPanel.isVisible = true
+                overviewPanel.isVisible = false
                 channelPanel.isVisible = false
                 setSetupEnabled(!state.connecting)
                 setupProgress.isVisible = state.connecting
@@ -824,8 +1046,20 @@ class MainActivity : ComponentActivity() {
                 setupError.text = state.error.orEmpty()
                 state.config?.let(::populateSetup)
             }
+            is ScreenState.Overview -> {
+                conversationLoading = false
+                conversationBackCallback.isEnabled = false
+                dismissMentionSuggestions()
+                setupPanel.isVisible = false
+                overviewPanel.isVisible = true
+                channelPanel.isVisible = false
+                overviewTitle.text = state.teamTitle
+                conversationAdapter.replace(state.conversations)
+                overviewEmpty.isVisible = state.conversations.isEmpty()
+            }
             is ScreenState.Conversation -> {
                 setupPanel.isVisible = false
+                overviewPanel.isVisible = false
                 channelPanel.isVisible = true
                 channelTitle.text = state.title
                 conversationLoading = state.loading
@@ -846,6 +1080,7 @@ class MainActivity : ComponentActivity() {
                             } else {
                                 restoreScrollAnchor(anchor)
                             }
+                            scrollToPendingNotification()
                         }
                     }
                 }
@@ -937,6 +1172,8 @@ class MainActivity : ComponentActivity() {
         }
         connectionStatus.setText(text)
         connectionStatus.setTextColor(ContextCompat.getColor(this, color))
+        overviewConnectionStatus.setText(text)
+        overviewConnectionStatus.setTextColor(ContextCompat.getColor(this, color))
     }
 
     private fun applyMutation(mutation: FeedMutation) {
@@ -1006,7 +1243,23 @@ class MainActivity : ComponentActivity() {
         if (editFocusAnchor != null) {
             messageList.doOnPreDraw { correctEditFocusAfterLayout() }
         }
+        if (pendingNotificationPostId != null) {
+            messageList.post(::scrollToPendingNotification)
+        }
     }
+
+    private fun scrollToPendingNotification() {
+        val postId = pendingNotificationPostId ?: return
+        val position = adapter.positionOfServerId(postId)
+        if (position == RecyclerView.NO_POSITION) return
+        layoutManager.scrollToPositionWithOffset(position, messageList.height / 3)
+        pendingNotificationPostId = null
+    }
+
+    private fun Intent.consumeNotificationPostId(): String? =
+        getStringExtra(BackgroundPollingWorker.EXTRA_NOTIFICATION_POST_ID)
+            ?.takeIf(String::isNotBlank)
+            ?.also { removeExtra(BackgroundPollingWorker.EXTRA_NOTIFICATION_POST_ID) }
 
     private fun requestBottomRefresh() {
         val now = SystemClock.elapsedRealtime()
@@ -1395,7 +1648,6 @@ class MainActivity : ComponentActivity() {
     private fun populateSetup(config: ServerConfig) {
         if (serverUrl.text.isBlank()) serverUrl.setText(config.baseUrl)
         if (teamName.text.isBlank()) teamName.setText(config.teamName)
-        if (channelName.text.isBlank()) channelName.setText(config.channelName)
         if (username.text.isBlank()) username.setText(config.username)
         if (config.password.isBlank()) {
             password.text.clear()
@@ -1407,7 +1659,6 @@ class MainActivity : ComponentActivity() {
     private fun setSetupEnabled(enabled: Boolean) {
         serverUrl.isEnabled = enabled
         teamName.isEnabled = enabled
-        channelName.isEnabled = enabled
         username.isEnabled = enabled
         password.isEnabled = enabled
         connectButton.isEnabled = enabled

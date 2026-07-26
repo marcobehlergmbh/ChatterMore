@@ -22,6 +22,23 @@ data class RememberedServer(
     )
 }
 
+data class RememberedConversation(
+    val baseUrl: String,
+    val teamId: String,
+    val userId: String,
+    val channelId: String,
+) {
+    fun channelIdFor(
+        baseUrl: String,
+        teamId: String,
+        userId: String,
+    ): String? = channelId.takeIf {
+        this.baseUrl == baseUrl &&
+            this.teamId == teamId &&
+            this.userId == userId
+    }
+}
+
 data class AuthenticatedServerConfig(
     val baseUrl: String,
     val teamName: String,
@@ -71,6 +88,11 @@ data class MattermostChannel(
     val id: String,
     val name: String,
     val displayName: String,
+    val teamId: String = "",
+    val type: String = "",
+    val lastPostAt: Long = 0,
+    val totalMessageCount: Long = 0,
+    val deleteAt: Long = 0,
 )
 
 sealed interface Conversation {
@@ -80,12 +102,12 @@ sealed interface Conversation {
     val title: String
     val canNavigateBack: Boolean
 
-    data class ConfiguredChannel(
+    data class Channel(
         override val channel: MattermostChannel,
     ) : Conversation {
         override val title: String
             get() = channel.displayName.ifBlank { channel.name }
-        override val canNavigateBack: Boolean = false
+        override val canNavigateBack: Boolean = true
     }
 
     data class DirectMessage(
@@ -103,6 +125,45 @@ data class MattermostTeam(
     val name: String,
     val displayName: String,
 )
+
+data class MattermostChannelMember(
+    val channelId: String,
+    val userId: String,
+    val messageCount: Long,
+    val mentionCount: Long,
+    val lastViewedAt: Long,
+)
+
+enum class ConversationKind {
+    CHANNEL,
+    DIRECT_MESSAGE,
+}
+
+data class ConversationSummary(
+    val channel: MattermostChannel,
+    val kind: ConversationKind,
+    val title: String,
+    val peerUserId: String? = null,
+    val peerUsername: String? = null,
+    val lastPostAt: Long = channel.lastPostAt,
+    val unread: Boolean = false,
+    val mentionCount: Long = 0,
+) {
+    val id: String
+        get() = channel.id
+}
+
+data class InitializedDirectory(
+    val team: MattermostTeam,
+    val user: MattermostUser,
+    val config: AuthenticatedServerConfig,
+    val conversations: List<ConversationSummary>,
+)
+
+sealed interface ConversationMutation {
+    data class Replace(val conversations: List<ConversationSummary>) : ConversationMutation
+    data class Update(val conversation: ConversationSummary) : ConversationMutation
+}
 
 data class MattermostPost(
     val id: String,

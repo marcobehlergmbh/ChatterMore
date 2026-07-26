@@ -1,0 +1,83 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:background="?android:attr/selectableItemBackground"
+    android:clickable="true"
+    android:focusable="true"
+    android:orientation="vertical">
+
+    <TextView
+        android:id="@+id/conversationSection"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:paddingStart="16dp"
+        android:paddingTop="18dp"
+        android:paddingEnd="16dp"
+        android:paddingBottom="6dp"
+        android:textColor="@color/message_metadata"
+        android:textSize="12sp"
+        android:textStyle="bold" />
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="56dp"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:paddingHorizontal="16dp">
+
+        <FrameLayout
+            android:layout_width="40dp"
+            android:layout_height="40dp">
+
+            <ImageView
+                android:id="@+id/conversationAvatar"
+                android:layout_width="40dp"
+                android:layout_height="40dp"
+                android:background="@drawable/avatar_background"
+                android:clipToOutline="true"
+                android:importantForAccessibility="no"
+                android:outlineProvider="background"
+                android:padding="@dimen/message_avatar_placeholder_padding"
+                android:scaleType="centerCrop"
+                android:src="@drawable/ic_person" />
+
+            <TextView
+                android:id="@+id/conversationChannelIcon"
+                android:layout_width="40dp"
+                android:layout_height="40dp"
+                android:gravity="center"
+                android:importantForAccessibility="no"
+                android:text="#"
+                android:textColor="@color/message_metadata"
+                android:textSize="24sp" />
+        </FrameLayout>
+
+        <TextView
+            android:id="@+id/conversationTitle"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="12dp"
+            android:layout_weight="1"
+            android:ellipsize="end"
+            android:maxLines="1"
+            android:textColor="@color/text_primary"
+            android:textSize="16sp" />
+
+        <TextView
+            android:id="@+id/conversationTime"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="8dp"
+            style="@style/TextAppearance.MattermostLite.MessageMetadata" />
+
+        <View
+            android:id="@+id/conversationUnread"
+            android:layout_width="8dp"
+            android:layout_height="8dp"
+            android:layout_marginStart="10dp"
+            android:background="@drawable/unread_dot"
+            android:importantForAccessibility="no"
+            android:visibility="gone" />
+    </LinearLayout>
+</LinearLayout>
