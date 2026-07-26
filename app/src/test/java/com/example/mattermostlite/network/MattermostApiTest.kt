@@ -19,11 +19,11 @@ import org.junit.Test
 
 class MattermostApiTest {
     @Test
-    fun `normalizes login without requiring a preselected channel`() {
+    fun `normalizes login without requiring a preselected team or channel`() {
         val normalized = MattermostApi(OkHttpClient()).normalizedConfig(
             ServerConfig(
                 baseUrl = "https://mattermost.example.com/",
-                teamName = " engineering ",
+                teamName = "",
                 channelName = "",
                 username = " marco ",
                 password = "secret",
@@ -31,8 +31,47 @@ class MattermostApiTest {
         )
 
         assertEquals("", normalized.channelName)
-        assertEquals("engineering", normalized.teamName)
+        assertEquals("", normalized.teamName)
         assertEquals("marco", normalized.username)
+    }
+
+    @Test
+    fun `uses the first available team when login has no team selection`() = runBlocking {
+        var captured: CapturedRequest? = null
+        val client = OkHttpClient.Builder()
+            .addInterceptor { chain ->
+                val request = chain.request()
+                captured = request.capture()
+                Response.Builder()
+                    .request(request)
+                    .protocol(Protocol.HTTP_1_1)
+                    .code(200)
+                    .message("OK")
+                    .body(
+                        """
+                        [
+                          {"id":"team-1","name":"engineering","display_name":"Engineering"},
+                          {"id":"team-2","name":"product","display_name":"Product"}
+                        ]
+                        """.trimIndent().toResponseBody(JSON_MEDIA_TYPE),
+                    )
+                    .build()
+            }
+            .build()
+
+        val team = MattermostApi(client).resolveTeam(
+            AuthenticatedServerConfig(
+                baseUrl = "https://mattermost.example.com",
+                teamName = "",
+                channelName = "",
+                token = "session-token",
+            ),
+        )
+
+        assertEquals("team-1", team.id)
+        assertEquals("engineering", team.name)
+        assertEquals("/api/v4/users/me/teams", captured?.path)
+        assertEquals("Bearer session-token", captured?.authorization)
     }
 
     @Test

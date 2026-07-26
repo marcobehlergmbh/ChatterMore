@@ -220,12 +220,14 @@ class MainViewModel(
                         directory = directory,
                         selectInitialScreen =
                             initializationGeneration == conversationRequestGeneration,
-                        restoreRememberedConversation = false,
+                        restoreRememberedConversation = true,
                     )
                 }
             }
                 .onSuccess { directory ->
-                    val normalized = container.api.normalizedConfig(config)
+                    val normalized = container.api.normalizedConfig(config).copy(
+                        teamName = directory.config.teamName,
+                    )
                     showInitializedDirectory(
                         directory = directory,
                         selectInitialScreen =
@@ -373,7 +375,7 @@ class MainViewModel(
             peerUserId = summary.peerUserId,
             loading = true,
         )
-        viewModelScope.launch {
+        viewModelScope.launch(start = CoroutineStart.UNDISPATCHED) {
             runCatching { repository.openConversation(summary.id) }
                 .onSuccess { conversation ->
                     if (requestGeneration != conversationRequestGeneration) return@onSuccess
@@ -420,7 +422,7 @@ class MainViewModel(
             peerUserId = userId,
             loading = true,
         )
-        viewModelScope.launch {
+        viewModelScope.launch(start = CoroutineStart.UNDISPATCHED) {
             runCatching { repository.openDirectMessage(userId) }
                 .onSuccess { conversation ->
                     if (requestGeneration != conversationRequestGeneration) return@onSuccess
@@ -775,18 +777,22 @@ class MainViewModel(
         )
         overviewScreen = overview
         if (!selectInitialScreen) return
-        _screen.value = overview
-        if (!restoreRememberedConversation) return
-        val rememberedChannelId = container.configStore.loadRememberedConversation()
-            ?.channelIdFor(
-                baseUrl = directory.config.baseUrl,
-                teamId = directory.team.id,
-                userId = directory.user.id,
-            )
-            ?: return
-        directory.conversations
-            .firstOrNull { it.id == rememberedChannelId }
-            ?.let(::openConversation)
+        val remembered = if (restoreRememberedConversation) {
+            val rememberedChannelId = container.configStore.loadRememberedConversation()
+                ?.channelIdFor(
+                    baseUrl = directory.config.baseUrl,
+                    teamId = directory.team.id,
+                    userId = directory.user.id,
+                )
+            directory.conversations.firstOrNull { it.id == rememberedChannelId }
+        } else {
+            null
+        }
+        if (remembered == null) {
+            _screen.value = overview
+        } else {
+            openConversation(remembered)
+        }
     }
 
     private fun rememberSelectedConversation(channelId: String) {

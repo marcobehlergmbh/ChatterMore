@@ -142,9 +142,9 @@ class ChannelRepository(
         _uploadCapabilities.value = UploadCapabilities()
         clearMentionContext()
         val (authenticatedConfig, authenticatedUser) = api.login(rawConfig)
-        config = authenticatedConfig
         currentUser = authenticatedUser
-        currentTeam = api.resolveTeam(config)
+        currentTeam = api.resolveTeam(authenticatedConfig)
+        config = authenticatedConfig.copy(teamName = currentTeam.name)
         resetMentionContext(authenticatedUser)
         _channelUsers.value = listOf(authenticatedUser)
         directoryCacheKey = ConversationSummaryCache.Key(
@@ -157,12 +157,15 @@ class ChannelRepository(
             .orEmpty()
         if (cached.isNotEmpty()) {
             replaceDirectory(cached, emit = false)
+        }
+        // The cache callback may synchronously start the remembered conversation.
+        initialized = true
+        if (foreground) startSocket()
+        if (cached.isNotEmpty()) {
             onCachedDirectory(
                 InitializedDirectory(currentTeam, currentUser, config, cached),
             )
         }
-        initialized = true
-        if (foreground) startSocket()
 
         val directory = runCatching {
             coroutineScope {
@@ -213,11 +216,12 @@ class ChannelRepository(
                     if (userId == null) {
                         Conversation.Channel(summary.channel)
                     } else {
-                    val peer = knownUser(userId)
-                        ?: api.users(config, listOf(userId)).singleOrNull()
-                        ?: throw IllegalArgumentException("The selected user could not be found.")
-                    addMentionUsers(listOf(peer))
-                    Conversation.DirectMessage(summary.channel, peer)
+                        val peer = knownUser(userId)
+                            ?: summary.cachedPeer()
+                            ?: api.users(config, listOf(userId)).singleOrNull()
+                            ?: throw IllegalArgumentException("The selected user could not be found.")
+                        addMentionUsers(listOf(peer))
+                        Conversation.DirectMessage(summary.channel, peer)
                     }
                 }
             }
@@ -237,7 +241,11 @@ class ChannelRepository(
                 ?: api.users(config, listOf(userId)).singleOrNull()
                 ?: throw IllegalArgumentException("The selected user could not be found.")
             addMentionUsers(listOf(peer))
-            val directChannel = api.directChannel(config, currentUser.id, peer.id)
+            val directChannel = directoryMutex.withLock {
+                directoryById.values.firstOrNull {
+                    it.kind == ConversationKind.DIRECT_MESSAGE && it.peerUserId == peer.id
+                }?.channel
+            } ?: api.directChannel(config, currentUser.id, peer.id)
             upsertDirectConversation(directChannel, peer)
             Conversation.DirectMessage(directChannel, peer)
         } as? Conversation.DirectMessage
@@ -524,7 +532,8 @@ class ChannelRepository(
                 val page = api.posts(config, target.channelId)
                 if (generation != conversationGeneration.get()) return null
                 posts = page.orderedPosts
-                profiles = fetchProfiles(posts)
+                // Author hydration must not add another network round trip before first content.
+                profiles = cachedProfiles(posts)
                 cacheRecentPage(target.channelId, posts, profiles)
             } else {
                 posts = cached.posts
@@ -547,6 +556,17 @@ class ChannelRepository(
             }
             scheduleMentionResolution(posts)
             ensurePresence(posts.map(MattermostPost::userId) + currentUser.id)
+            if (cached == null) {
+                scope.launch {
+                    hydratePostProfiles(
+                        generation = generation,
+                        channelId = target.channelId,
+                        posts = posts,
+                    )
+                }
+            } else {
+                scope.launch { refreshHeadSafely() }
+            }
 
             when (target) {
                 is Conversation.Channel -> scope.launch {
@@ -567,7 +587,17 @@ class ChannelRepository(
                     ensurePresence(listOf(target.peer.id))
                 }
             }
-            markConversationRead(target.channelId, previousChannelId)
+            // Read acknowledgement is independent of the already committed, visible feed.
+            val readConfig = config
+            val readUserId = currentUser.id
+            scope.launch {
+                markConversationRead(
+                    channelId = target.channelId,
+                    previousChannelId = previousChannelId,
+                    requestConfig = readConfig,
+                    requestUserId = readUserId,
+                )
+            }
             if (postArrivedDuringConversationSwitch.getAndSet(false)) {
                 scope.launch { refreshHeadSafely() }
             }
@@ -812,9 +842,16 @@ class ChannelRepository(
         scheduleDirectoryCacheWrite()
     }
 
-    private suspend fun markConversationRead(channelId: String, previousChannelId: String?) {
+    private suspend fun markConversationRead(
+        channelId: String,
+        previousChannelId: String?,
+        requestConfig: AuthenticatedServerConfig,
+        requestUserId: String,
+    ) {
+        if (config != requestConfig || currentUser.id != requestUserId) return
         val cleared: ConversationSummary
         directoryMutex.withLock {
+            if (config != requestConfig || currentUser.id != requestUserId) return
             val current = directoryById[channelId] ?: return
             cleared = current.copy(unread = false, mentionCount = 0)
             directoryById[channelId] = cleared
@@ -822,7 +859,7 @@ class ChannelRepository(
         _conversationMutations.emit(ConversationMutation.Update(cleared))
         scheduleDirectoryCacheWrite()
         runCatching {
-            api.viewChannel(config, currentUser.id, channelId, previousChannelId)
+            api.viewChannel(requestConfig, requestUserId, channelId, previousChannelId)
         }.onFailure {
             scope.launch { refreshDirectorySafely() }
         }
@@ -834,7 +871,12 @@ class ChannelRepository(
             delay(ACTIVE_READ_ACK_DELAY_MS)
             if (!activeConversationAtLatest) return@launch
             val token = activeToken() ?: return@launch
-            markConversationRead(token.conversation.channelId, previousChannelId = null)
+            markConversationRead(
+                channelId = token.conversation.channelId,
+                previousChannelId = null,
+                requestConfig = config,
+                requestUserId = currentUser.id,
+            )
         }
     }
 
@@ -967,12 +1009,53 @@ class ChannelRepository(
             .map(MattermostPost::userId)
             .filter(String::isNotBlank)
             .toSet()
-        val missing = mentionMutex.withLock {
-            requestedIds.filterNotTo(mutableSetOf(), knownUsersById::containsKey)
+        val (cached, missing) = mentionMutex.withLock {
+            val cachedProfiles = requestedIds.mapNotNull(knownUsersById::get)
+            cachedProfiles to requestedIds.filterNotTo(
+                mutableSetOf(),
+                knownUsersById::containsKey,
+            )
         }
-        val profiles = if (missing.isEmpty()) emptyList() else api.users(config, missing)
-        addMentionUsers(profiles)
-        return profiles
+        val fetched = if (missing.isEmpty()) emptyList() else api.users(config, missing)
+        addMentionUsers(fetched)
+        return (cached + fetched).distinctBy(MattermostUser::id)
+    }
+
+    private suspend fun cachedProfiles(
+        posts: Collection<MattermostPost>,
+    ): List<MattermostUser> {
+        val requestedIds = posts.asSequence()
+            .map(MattermostPost::userId)
+            .filter(String::isNotBlank)
+            .toSet()
+        return mentionMutex.withLock { requestedIds.mapNotNull(knownUsersById::get) }
+    }
+
+    private suspend fun hydratePostProfiles(
+        generation: Int,
+        channelId: String,
+        posts: Collection<MattermostPost>,
+    ) {
+        val profiles = runCatching { fetchProfiles(posts) }.getOrNull() ?: return
+        if (generation != conversationGeneration.get()) return
+        synchronized(recentConversationPages) {
+            val cached = recentConversationPages[channelId]
+            if (cached != null) {
+                recentConversationPages[channelId] = cached.copy(
+                    profiles = (cached.profiles + profiles).distinctBy(MattermostUser::id),
+                )
+            }
+        }
+        val token = activeToken()
+            ?.takeIf {
+                it.generation == generation && it.conversation.channelId == channelId
+            }
+            ?: return
+        val mutations = feedMutex.withLock {
+            if (!isActiveLocked(token)) return@withLock emptyList()
+            feed.updateProfiles(profiles)
+        }
+        emitAll(mutations)
     }
 
     private suspend fun refreshLatestSafely() {
@@ -1123,6 +1206,14 @@ class ChannelRepository(
             publishMentionContext()
             _channelUsers.value = sortedUsers
         }
+        val token = activeToken()
+            ?.takeIf { it.conversation.channelId == channelId }
+            ?: return
+        val mutations = feedMutex.withLock {
+            if (!isActiveLocked(token)) return@withLock emptyList()
+            feed.updateProfiles(sortedUsers)
+        }
+        emitAll(mutations)
     }
 
     private suspend fun resetMentionContext(user: MattermostUser) {
@@ -1158,6 +1249,16 @@ class ChannelRepository(
     private fun publishMentionContext() {
         _mentionContext.value = _mentionContext.value.copy(
             usersByUsername = mentionUsersByUsername.toMap(),
+        )
+    }
+
+    private fun ConversationSummary.cachedPeer(): MattermostUser? {
+        val userId = peerUserId?.takeIf(String::isNotBlank) ?: return null
+        val username = peerUsername?.takeIf(String::isNotBlank) ?: return null
+        return MattermostUser(
+            id = userId,
+            username = username,
+            firstName = title.takeUnless { it == username }.orEmpty(),
         )
     }
 

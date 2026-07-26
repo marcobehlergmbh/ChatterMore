@@ -4,8 +4,8 @@ A deliberately small, foreground-first Android client for Mattermost channels an
 
 ## Features
 
-- Connects to a Mattermost team using a username and password.
-- Remembers the host, team, and username from the last successful connection without retaining them as credentials.
+- Connects to Mattermost using a server URL, username, and password.
+- Remembers the host, resolved team, and username from the last successful connection without retaining them as credentials.
 - Opens to a cached overview of joined channels and previous direct-message conversations.
 - Highlights unread conversations with targeted real-time row updates.
 - Loads channel, membership, and DM peer metadata in bulk without requesting every conversation's posts.
@@ -54,9 +54,9 @@ The debug APK is written to `app/build/outputs/apk/debug/app-debug.apk`.
 
 ## Connect
 
-1. Use a Mattermost account that belongs to the target team.
+1. Use a Mattermost account that belongs to at least one team.
 2. Install and open the app.
-3. Enter the HTTPS server URL, team URL or display name, username, and password.
+3. Enter the HTTPS server URL, username, and password.
 4. Tap **Connect**.
 5. Select a channel or direct-message conversation from the overview.
 

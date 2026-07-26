@@ -29,6 +29,21 @@ class FeedStoreTest {
     }
 
     @Test
+    fun `renders posts before profiles arrive and updates authors in place`() {
+        val store = FeedStore("Unsupported")
+
+        val initial = store.replace(
+            posts = listOf(post("post-1", 100)),
+            profiles = emptyList(),
+        )
+
+        assertEquals(user.id, initial.items.single().author)
+        val updates = store.updateProfiles(listOf(user))
+        assertEquals(1, updates.size)
+        assertEquals(user.displayName, store.snapshot().single().author)
+    }
+
+    @Test
     fun `reconciles websocket or rest acknowledgement by pending id`() {
         val store = FeedStore("Unsupported")
         store.addPending("client-1", "channel", user, "hello", 100)

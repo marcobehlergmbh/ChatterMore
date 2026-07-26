@@ -3,8 +3,6 @@
     <string name="app_name">Mattermost Lite</string>
     <string name="setup_title">Mattermost Lite</string>
     <string name="server_url_hint">https://mattermost.example.com</string>
-    <string name="team_name">Team URL or display name</string>
-    <string name="channel_name">Channel URL or display name</string>
     <string name="conversations">Conversations</string>
     <string name="channels">Channels</string>
     <string name="direct_messages">Direct messages</string>

@@ -14,7 +14,9 @@ import com.example.mattermostlite.model.PostPage
 import com.example.mattermostlite.model.ServerConfig
 import com.example.mattermostlite.model.TeamNotFoundException
 import com.example.mattermostlite.model.UploadCapabilities
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withContext
 import okhttp3.Call
 import okhttp3.Callback
 import okhttp3.HttpUrl
@@ -86,29 +88,42 @@ class MattermostApi(
         }
     }
 
-    suspend fun resolveTeam(config: AuthenticatedServerConfig): MattermostTeam = try {
-        parseTeam(
-            execute(
-                request(config, apiUrl(config, "teams", "name", config.teamName)),
-            ),
-        )
-    } catch (error: MattermostException) {
-        if (error.statusCode != 404) throw error
-
-        val matches = parseTeams(
-            execute(
-                request(
-                    config,
-                    apiUrl(config, "users", "me", "teams"),
+    suspend fun resolveTeam(config: AuthenticatedServerConfig): MattermostTeam {
+        if (config.teamName.isBlank()) {
+            return parseTeams(
+                execute(
+                    request(
+                        config,
+                        apiUrl(config, "users", "me", "teams"),
+                    ),
                 ),
-            ),
-        ).filter { it.matches(config.teamName) }
-        when (matches.size) {
-            0 -> throw TeamNotFoundException(config.teamName)
-            1 -> matches.single()
-            else -> throw IllegalArgumentException(
-                "More than one team is displayed as \"${config.teamName}\". Enter its URL name instead.",
+            ).firstOrNull()
+                ?: throw IllegalArgumentException("This account does not belong to a Mattermost team.")
+        }
+        return try {
+            parseTeam(
+                execute(
+                    request(config, apiUrl(config, "teams", "name", config.teamName)),
+                ),
             )
+        } catch (error: MattermostException) {
+            if (error.statusCode != 404) throw error
+
+            val matches = parseTeams(
+                execute(
+                    request(
+                        config,
+                        apiUrl(config, "users", "me", "teams"),
+                    ),
+                ),
+            ).filter { it.matches(config.teamName) }
+            when (matches.size) {
+                0 -> throw TeamNotFoundException(config.teamName)
+                1 -> matches.single()
+                else -> throw IllegalArgumentException(
+                    "More than one team is displayed as \"${config.teamName}\". Enter its URL name instead.",
+                )
+            }
         }
     }
 
@@ -168,7 +183,8 @@ class MattermostApi(
                 after?.let { addQueryParameter("after", it) }
             }
             .build()
-        return parsePostPage(execute(request(config, url)))
+        val responseBody = execute(request(config, url))
+        return withContext(Dispatchers.Default) { parsePostPage(responseBody) }
     }
 
     suspend fun users(config: AuthenticatedServerConfig, ids: Collection<String>): List<MattermostUser> {
@@ -331,7 +347,6 @@ class MattermostApi(
             ?: throw IllegalArgumentException("Enter a valid server URL")
         require(url.scheme == "https") { "The server URL must use HTTPS" }
         require(url.query == null && url.fragment == null) { "The server URL cannot contain a query or fragment" }
-        require(config.teamName.isNotBlank()) { "Enter a team name" }
         require(config.username.isNotBlank()) { "Enter a username" }
         require(config.password.isNotBlank()) { "Enter a password" }
         return config.copy(

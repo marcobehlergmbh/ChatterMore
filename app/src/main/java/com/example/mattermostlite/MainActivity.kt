@@ -120,7 +120,6 @@ class MainActivity : ComponentActivity() {
     private lateinit var overviewPanel: View
     private lateinit var channelPanel: View
     private lateinit var serverUrl: EditText
-    private lateinit var teamName: EditText
     private lateinit var username: EditText
     private lateinit var password: EditText
     private lateinit var connectButton: Button
@@ -331,7 +330,6 @@ class MainActivity : ComponentActivity() {
         overviewPanel = findViewById(R.id.overviewPanel)
         channelPanel = findViewById(R.id.channelPanel)
         serverUrl = findViewById(R.id.serverUrl)
-        teamName = findViewById(R.id.teamName)
         username = findViewById(R.id.username)
         password = findViewById(R.id.password)
         connectButton = findViewById(R.id.connectButton)
@@ -389,7 +387,7 @@ class MainActivity : ComponentActivity() {
             viewModel.connect(
                 ServerConfig(
                     baseUrl = serverUrl.text.toString(),
-                    teamName = teamName.text.toString(),
+                    teamName = "",
                     channelName = "",
                     username = username.text.toString(),
                     password = password.text.toString(),
@@ -1000,7 +998,6 @@ class MainActivity : ComponentActivity() {
     private fun renderComposer(state: ComposerState) {
         draftAttachmentAdapter.submit(state.attachments)
         draftAttachmentList.isVisible = state.attachments.isNotEmpty()
-        attachmentButton.isEnabled = state.capabilities.enabled && viewModel.messageEdit.value == null
         updateComposerButtons()
     }
 
@@ -1014,9 +1011,11 @@ class MainActivity : ComponentActivity() {
         val edit = viewModel.messageEdit.value
         if (edit != null) {
             sendButton.isEnabled = !edit.submitting
+            attachmentButton.isEnabled = false
             return
         }
         val state = viewModel.composer.value
+        attachmentButton.isEnabled = state.capabilities.enabled
         sendButton.isEnabled = !state.hasBlockingAttachments &&
             (messageInput.text.isNotBlank() || state.readyFiles.isNotEmpty())
     }
@@ -1647,7 +1646,6 @@ class MainActivity : ComponentActivity() {
 
     private fun populateSetup(config: ServerConfig) {
         if (serverUrl.text.isBlank()) serverUrl.setText(config.baseUrl)
-        if (teamName.text.isBlank()) teamName.setText(config.teamName)
         if (username.text.isBlank()) username.setText(config.username)
         if (config.password.isBlank()) {
             password.text.clear()
@@ -1658,7 +1656,6 @@ class MainActivity : ComponentActivity() {
 
     private fun setSetupEnabled(enabled: Boolean) {
         serverUrl.isEnabled = enabled
-        teamName.isEnabled = enabled
         username.isEnabled = enabled
         password.isEnabled = enabled
         connectButton.isEnabled = enabled
