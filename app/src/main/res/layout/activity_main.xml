@@ -291,7 +291,7 @@
                 <View
                     android:layout_width="2dp"
                     android:layout_height="18dp"
-                    android:background="@color/mattermost_blue" />
+                    android:background="@color/chattermore_blue" />
 
                 <ImageView
                     android:layout_width="16dp"
@@ -299,7 +299,7 @@
                     android:layout_marginStart="8dp"
                     android:contentDescription="@null"
                     android:src="@drawable/ic_edit"
-                    android:tint="@color/mattermost_blue" />
+                    android:tint="@color/chattermore_blue" />
 
                 <TextView
                     android:id="@+id/editModeLabel"
@@ -309,7 +309,7 @@
                     android:layout_weight="1"
                     android:fontFamily="sans-serif-medium"
                     android:text="@string/editing_message"
-                    android:textColor="@color/mattermost_blue"
+                    android:textColor="@color/chattermore_blue"
                     android:textSize="13sp" />
 
                 <ImageButton
@@ -363,7 +363,7 @@
                         android:layout_height="28dp"
                         android:contentDescription="@null"
                         android:src="@drawable/ic_gallery"
-                        android:tint="@color/mattermost_blue" />
+                        android:tint="@color/chattermore_blue" />
 
                     <TextView
                         android:layout_width="wrap_content"
@@ -389,7 +389,7 @@
                         android:layout_height="28dp"
                         android:contentDescription="@null"
                         android:src="@drawable/ic_camera"
-                        android:tint="@color/mattermost_blue" />
+                        android:tint="@color/chattermore_blue" />
 
                     <TextView
                         android:layout_width="wrap_content"
@@ -415,7 +415,7 @@
                         android:layout_height="28dp"
                         android:contentDescription="@null"
                         android:src="@drawable/ic_attach_file"
-                        android:tint="@color/mattermost_blue" />
+                        android:tint="@color/chattermore_blue" />
 
                     <TextView
                         android:layout_width="wrap_content"

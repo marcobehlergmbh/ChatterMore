@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">Mattermost Lite</string>
-    <string name="setup_title">Mattermost Lite</string>
+    <string name="app_name">ChatterMore</string>
+    <string name="setup_title">ChatterMore</string>
     <string name="server_url_hint">https://mattermost.example.com</string>
     <string name="conversations">Conversations</string>
     <string name="channels">Channels</string>
@@ -54,7 +54,7 @@
     <string name="background_checks_need_connection">Connect to a channel before enabling background checks.</string>
     <string name="notification_permission_denied">Notifications remain off. You can allow them later in Android Settings.</string>
     <string name="background_checks_paused">Background checks paused</string>
-    <string name="open_app_to_reconnect">Open Mattermost Lite to reconnect your account.</string>
+    <string name="open_app_to_reconnect">Open ChatterMore to reconnect your account.</string>
     <string name="background_notifications_channel">Mattermost messages</string>
     <string name="background_notifications_channel_description">Approximate background checks for new Mattermost messages</string>
     <string name="you">You</string>

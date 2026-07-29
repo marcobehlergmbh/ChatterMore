@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<com.example.mattermostlite.ui.SunoPlayerView xmlns:android="http://schemas.android.com/apk/res/android"
+<com.marcobehler.chattermore.ui.SunoPlayerView xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="64dp"
     android:background="@drawable/suno_player_background"
@@ -79,4 +79,4 @@
             android:indeterminateTint="@color/suno_accent"
             android:visibility="gone" />
     </FrameLayout>
-</com.example.mattermostlite.ui.SunoPlayerView>
+</com.marcobehler.chattermore.ui.SunoPlayerView>

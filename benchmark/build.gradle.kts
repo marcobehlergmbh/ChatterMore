@@ -3,7 +3,7 @@ plugins {
 }
 
 android {
-    namespace = "com.example.mattermostlite.benchmark"
+    namespace = "com.marcobehler.chattermore.benchmark"
     compileSdk = 36
     targetProjectPath = ":app"
 

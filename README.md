@@ -1,6 +1,15 @@
-# Mattermost Lite
+# ChatterMore
 
-A deliberately small, foreground-first Android client for Mattermost channels and direct messages. It targets Android 10 (API 29) and prioritizes immediate text rendering over feature breadth.
+An unofficial, high-performance Mattermost client, that just works.
+
+ChatterMore is a deliberately small, foreground-first Android client for Mattermost channels and direct messages. It targets Android 10 (API 29) and prioritizes immediate text rendering over feature breadth.
+
+See the [ChatterMore Privacy Policy](PRIVACY_POLICY.md) for details about data
+handled by the app.
+
+The repository also contains a
+[Google Play Data Safety worksheet](PLAY_DATA_SAFETY.md) for release
+preparation.
 
 ## Features
 
@@ -51,6 +60,32 @@ Requirements:
 ```
 
 The debug APK is written to `app/build/outputs/apk/debug/app-debug.apk`.
+
+## Release signing
+
+Generate the local upload key once:
+
+```bash
+sh scripts/generate-upload-keystore.sh
+```
+
+This creates `.signing/chattermore-upload.jks` and
+`.signing/keystore.properties`. Both are excluded from Git. Back up both files
+in a secure password manager or encrypted backup; the upload key is intended
+to remain stable for future Google Play releases.
+
+Build and verify the signed release bundle:
+
+```bash
+./gradlew bundleRelease
+jarsigner -verify -verbose -certs app/build/outputs/bundle/release/app-release.aab
+```
+
+Upload certificate SHA-256 fingerprint:
+
+```text
+52:6B:25:C0:BB:F8:CF:E5:48:F0:ED:47:68:8D:1A:89:A4:9D:23:D2:63:55:EF:A1:FE:A7:B7:48:66:40:E1:F4
+```
 
 ## Connect
 

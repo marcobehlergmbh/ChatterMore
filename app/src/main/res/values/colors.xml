@@ -9,7 +9,7 @@
     <color name="message_metadata">#8B949E</color>
     <color name="divider">#2C2C2C</color>
     <color name="attachment_surface">#171717</color>
-    <color name="mattermost_blue">#75A7FF</color>
+    <color name="chattermore_blue">#75A7FF</color>
     <color name="mention_user_text">#A8C7FA</color>
     <color name="mention_user_background">#263750</color>
     <color name="mention_direct_text">#FFFFFF</color>

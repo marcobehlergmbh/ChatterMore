@@ -60,7 +60,7 @@
         android:contentDescription="@string/retry_attachment"
         android:padding="6dp"
         android:src="@drawable/ic_retry"
-        android:tint="@color/mattermost_blue"
+        android:tint="@color/chattermore_blue"
         android:visibility="gone" />
 
     <ImageButton

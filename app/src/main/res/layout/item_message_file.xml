@@ -16,7 +16,7 @@
         android:layout_width="24dp"
         android:layout_height="24dp"
         android:contentDescription="@null"
-        android:tint="@color/mattermost_blue" />
+        android:tint="@color/chattermore_blue" />
 
     <LinearLayout
         android:layout_width="0dp"

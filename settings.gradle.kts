@@ -14,6 +14,6 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "MattermostLite"
+rootProject.name = "ChatterMore"
 include(":app")
 include(":benchmark")

@@ -1,19 +1,39 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
 }
 
+val signingPropertiesFile = rootProject.file(".signing/keystore.properties")
+val signingProperties = Properties().apply {
+    if (signingPropertiesFile.isFile) {
+        signingPropertiesFile.inputStream().use(::load)
+    }
+}
+
 android {
-    namespace = "com.example.mattermostlite"
+    namespace = "com.marcobehler.chattermore"
     compileSdk = 36
 
     defaultConfig {
-        applicationId = "com.example.mattermostlite"
+        applicationId = "com.marcobehler.chattermore"
         minSdk = 29
         targetSdk = 36
         versionCode = 1
         versionName = "0.1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+    }
+
+    signingConfigs {
+        if (signingPropertiesFile.isFile) {
+            create("release") {
+                storeFile = rootProject.file(signingProperties.getProperty("storeFile"))
+                storePassword = signingProperties.getProperty("storePassword")
+                keyAlias = signingProperties.getProperty("keyAlias")
+                keyPassword = signingProperties.getProperty("keyPassword")
+            }
+        }
     }
 
     buildTypes {
@@ -23,6 +43,7 @@ android {
         release {
             isMinifyEnabled = true
             isShrinkResources = true
+            signingConfig = signingConfigs.findByName("release")
             buildConfigField("boolean", "BENCHMARK_FIXTURES", "false")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
