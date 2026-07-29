@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg"
+    width="1024"
+    height="500"
+    viewBox="0 0 1024 500">
+  <g transform="translate(56 54) scale(1.35)">
+    <path
+        fill="#FFFFFF"
+        d="M32 27h44c7.18 0 13 5.82 13 13v24c0 7.18-5.82 13-13 13H64L52 87V77H32c-7.18 0-13-5.82-13-13V40c0-7.18 5.82-13 13-13Z"/>
+    <path
+        fill="#75A7FF"
+        d="M33 40h42v5H33zM33 51h42v5H33zM33 62h29v5H33z"/>
+  </g>
+  <text
+      x="224"
+      y="142"
+      fill="#FFFFFF"
+      font-family="Arial, sans-serif"
+      font-size="54"
+      font-weight="700">ChatterMore</text>
+  <text
+      x="60"
+      y="324"
+      fill="#FFFFFF"
+      font-family="Arial, sans-serif"
+      font-size="48"
+      font-weight="700">Fast, focused</text>
+  <text
+      x="60"
+      y="384"
+      fill="#FFFFFF"
+      font-family="Arial, sans-serif"
+      font-size="48"
+      font-weight="700">Mattermost messaging</text>
+</svg>

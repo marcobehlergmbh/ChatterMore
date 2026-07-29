@@ -18,9 +18,8 @@ Completed locally:
 Still requires manual or external work:
 
 - Back up the upload keystore and its credentials somewhere secure.
-- Publish the repository, then use the rendered GitHub privacy-policy URL in
-  Google Play and add it as a visible link in the app.
-- Create the store icon, feature graphic, and screenshots.
+- Enter the published GitHub privacy-policy URL in Google Play.
+- Capture the five sanitized store screenshots.
 - Set up a reviewer-accessible Mattermost server and test account.
 - Complete the Play Console forms, declarations, testing requirements, and
   submission.
@@ -39,10 +38,9 @@ Next actions:
 
 1. Back up `.signing/chattermore-upload.jks` and
    `.signing/keystore.properties`.
-2. Publish the repository to GitHub and replace the placeholder privacy-policy
-   URL with its final rendered GitHub URL.
-3. Create the Play Store graphics and screenshots.
-4. Create the Play Console app and reviewer environment.
+2. Create the Play Store graphics and screenshots.
+3. Create the Play Console app and reviewer environment, then enter the
+   published privacy-policy URL.
 
 ## App identity
 
@@ -72,8 +70,8 @@ depending on this key for Google Play releases.
 
 ## Privacy
 
-- [ ] Publish a public privacy-policy webpage.
-- [ ] Add a visible in-app link to the privacy policy.
+- [x] Publish a public privacy-policy webpage.
+- [x] Add a visible in-app link to the privacy policy.
 - [x] State that the app sends credentials, account/profile information,
       messages and attachments to the Mattermost server selected by the user.
 - [x] Mention local credential and message caching, notifications, downloaded
@@ -83,8 +81,9 @@ depending on this key for Google Play releases.
 - [x] Prepare the Play Data Safety answers in `PLAY_DATA_SAFETY.md`.
 - [ ] Enter and submit those answers in Play Console.
 
-The canonical policy is `PRIVACY_POLICY.md`. After publishing this repository
-on GitHub, use the public rendered Markdown URL in Play Console and the app.
+The canonical policy is `PRIVACY_POLICY.md`. Its public URL is
+`https://github.com/marcobehlergmbh/ChatterMore/blob/main/PRIVACY_POLICY.md`.
+Use that URL in Play Console and the app.
 
 Likely Data Safety categories include user IDs, messages, photos, videos,
 audio, and files/documents. These are used for app functionality and are sent
@@ -107,8 +106,8 @@ deletion feature should not be required.
       `PLAY_STORE_LISTING.md`.
 - [x] Clearly identify the app as unofficial.
 - [x] Provide the support email address `info@marcobehler.com`.
-- [ ] Create a 512 x 512 PNG store icon.
-- [ ] Create a 1024 x 500 PNG or JPEG feature graphic.
+- [x] Create a 512 x 512 PNG store icon.
+- [x] Create a 1024 x 500 PNG or JPEG feature graphic.
 - [ ] Capture at least two accurate phone screenshots.
 - [ ] Choose the app category, countries/regions and Free/Paid status.
 

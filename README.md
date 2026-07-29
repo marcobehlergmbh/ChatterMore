@@ -1,6 +1,6 @@
 # ChatterMore
 
-An unofficial, high-performance Mattermost client, that just works.
+An unofficial, fast and focused Mattermost client for Android.
 
 ChatterMore is a deliberately small, foreground-first Android client for Mattermost channels and direct messages. It targets Android 10 (API 29) and prioritizes immediate text rendering over feature breadth.
 

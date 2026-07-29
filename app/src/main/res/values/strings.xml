@@ -51,6 +51,9 @@
     <string name="lock_screen_notifications">Lock-screen notifications</string>
     <string name="lock_screen_notifications_explanation">Android controls whether these notifications and their sensitive content appear while the phone is locked.</string>
     <string name="open_android_notification_settings">Open Android notification settings</string>
+    <string name="privacy_policy">Privacy policy</string>
+    <string name="privacy_policy_url" translatable="false">https://github.com/marcobehlergmbh/ChatterMore/blob/main/PRIVACY_POLICY.md</string>
+    <string name="unable_to_open_privacy_policy">No browser is available to open the privacy policy.</string>
     <string name="background_checks_need_connection">Connect to a channel before enabling background checks.</string>
     <string name="notification_permission_denied">Notifications remain off. You can allow them later in Android Settings.</string>
     <string name="background_checks_paused">Background checks paused</string>

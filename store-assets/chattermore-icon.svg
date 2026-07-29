@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg"
+    width="512"
+    height="512"
+    viewBox="0 0 108 108">
+  <rect width="108" height="108" fill="#75A7FF"/>
+  <path
+      fill="#FFFFFF"
+      d="M32 27h44c7.18 0 13 5.82 13 13v24c0 7.18-5.82 13-13 13H64L52 87V77H32c-7.18 0-13-5.82-13-13V40c0-7.18 5.82-13 13-13Z"/>
+  <path
+      fill="#75A7FF"
+      d="M33 40h42v5H33zM33 51h42v5H33zM33 62h29v5H33z"/>
+</svg>

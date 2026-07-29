@@ -8,9 +8,9 @@ Character count: 11 / 30
 
 ## Short description
 
-An unofficial, high-performance Mattermost client, that just works.
+An unofficial, fast and focused Mattermost client for Android.
 
-Character count: 67 / 80
+Character count: 62 / 80
 
 ## Full description
 
@@ -80,8 +80,8 @@ merely for visibility.
 - Developer: **Marco Behler GmbH**
 - Support email: **info@marcobehler.com**
 - Website: **https://www.marcobehler.com**
-- Privacy policy: the public GitHub URL for `PRIVACY_POLICY.md` once the
-  repository is published
+- Privacy policy:
+  **https://github.com/marcobehlergmbh/ChatterMore/blob/main/PRIVACY_POLICY.md**
 
 ## Independence and trademark wording
 
@@ -147,6 +147,6 @@ customer information.
 
 ## Assets still required
 
-- [ ] 512 x 512 PNG Play store icon
-- [ ] 1024 x 500 feature graphic
+- [x] 512 x 512 PNG Play store icon
+- [x] 1024 x 500 feature graphic
 - [ ] Five sanitized phone screenshots

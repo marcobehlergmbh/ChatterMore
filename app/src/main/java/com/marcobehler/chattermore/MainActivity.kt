@@ -415,6 +415,9 @@ class MainActivity : ComponentActivity() {
         findViewById<ImageButton>(R.id.overviewSettingsButton).setOnClickListener {
             showConnectionSettings()
         }
+        findViewById<Button>(R.id.setupPrivacyPolicyButton).setOnClickListener {
+            openPrivacyPolicy()
+        }
         newMessagesButton.setOnClickListener {
             scrollToBottom(smooth = false)
             newMessagesButton.isVisible = false
@@ -488,6 +491,10 @@ class MainActivity : ComponentActivity() {
             setText(R.string.open_android_notification_settings)
             setOnClickListener { openBackgroundNotificationSettings() }
         }
+        val openPrivacyPolicy = Button(this).apply {
+            setText(R.string.privacy_policy)
+            setOnClickListener { openPrivacyPolicy() }
+        }
         content.addView(backgroundToggle)
         content.addView(explanation)
         content.addView(notifyFor)
@@ -496,6 +503,7 @@ class MainActivity : ComponentActivity() {
         content.addView(lockScreenTitle)
         content.addView(lockScreenExplanation)
         content.addView(openNotificationSettings)
+        content.addView(openPrivacyPolicy)
 
         fun updatePreferenceControls(enabled: Boolean) {
             notifyFor.isEnabled = enabled
@@ -555,6 +563,23 @@ class MainActivity : ComponentActivity() {
             .setNegativeButton(R.string.change_connection) { _, _ -> confirmClearConnection() }
             .setPositiveButton(android.R.string.ok, null)
             .show()
+    }
+
+    private fun openPrivacyPolicy() {
+        try {
+            startActivity(
+                Intent(
+                    Intent.ACTION_VIEW,
+                    Uri.parse(getString(R.string.privacy_policy_url)),
+                ),
+            )
+        } catch (_: ActivityNotFoundException) {
+            Toast.makeText(
+                this,
+                R.string.unable_to_open_privacy_policy,
+                Toast.LENGTH_LONG,
+            ).show()
+        }
     }
 
     private fun openBackgroundNotificationSettings() {

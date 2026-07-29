@@ -201,10 +201,9 @@ Before submitting the form:
 
 - [ ] Confirm the published app has the same dependencies and permissions
       reviewed here.
-- [ ] Confirm `PRIVACY_POLICY.md` is publicly accessible through the final
+- [x] Confirm `PRIVACY_POLICY.md` is publicly accessible through the final
       GitHub URL.
 - [ ] Add that public URL to the Play Console privacy-policy field.
-- [ ] Add the same public URL inside the app.
+- [x] Add the same public URL inside the app.
 - [ ] Compare the Play store preview against this worksheet.
 - [ ] Save a Play Console CSV export with the release records.
-
