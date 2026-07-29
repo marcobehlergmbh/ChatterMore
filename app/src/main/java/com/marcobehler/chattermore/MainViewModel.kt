@@ -111,6 +111,12 @@ class MainViewModel(
     private val _composerMessages = MutableSharedFlow<String>(extraBufferCapacity = 8)
     private val uploadJobs = mutableMapOf<String, Job>()
     private val uploadSemaphore = Semaphore(MAX_CONCURRENT_UPLOADS)
+    private val benchmarkConnectionState = MutableStateFlow(ConnectionState.CONNECTED)
+    private val benchmarkUserPresence =
+        MutableStateFlow<Map<String, com.marcobehler.chattermore.model.UserPresence>>(emptyMap())
+    private val benchmarkMentionContext =
+        MutableStateFlow(com.marcobehler.chattermore.model.MentionContext())
+    private val benchmarkChannelUsers = MutableStateFlow<List<MattermostUser>>(emptyList())
     private var attachmentGeneration = 0
     private var benchmarkItems: List<FeedItem>? = null
     private var currentUserId: String? = null
@@ -132,11 +138,22 @@ class MainViewModel(
     val composerMessages: SharedFlow<String> = _composerMessages.asSharedFlow()
     val mutations: SharedFlow<FeedMutation> = repository.mutations
     val conversationMutations: SharedFlow<ConversationMutation> = repository.conversationMutations
-    val connectionState: StateFlow<ConnectionState> = repository.connectionState
+    val connectionState: StateFlow<ConnectionState> =
+        if (BuildConfig.BENCHMARK_FIXTURES) {
+            benchmarkConnectionState.asStateFlow()
+        } else {
+            repository.connectionState
+        }
     val refreshing: StateFlow<Boolean> = repository.refreshing
-    val userPresence = repository.userPresence
-    val mentionContext = repository.mentionContext
-    val channelUsers = repository.channelUsers
+    val userPresence =
+        if (BuildConfig.BENCHMARK_FIXTURES) benchmarkUserPresence.asStateFlow()
+        else repository.userPresence
+    val mentionContext =
+        if (BuildConfig.BENCHMARK_FIXTURES) benchmarkMentionContext.asStateFlow()
+        else repository.mentionContext
+    val channelUsers =
+        if (BuildConfig.BENCHMARK_FIXTURES) benchmarkChannelUsers.asStateFlow()
+        else repository.channelUsers
 
     init {
         viewModelScope.launch {
@@ -318,50 +335,27 @@ class MainViewModel(
         return true
     }
 
-    fun enableBenchmarkFixture(count: Int) {
+    fun enableBenchmarkFixture(count: Int, mode: String? = null) {
         if (!BuildConfig.BENCHMARK_FIXTURES) return
-        benchmarkItems = (1..count.coerceIn(1, 2_000)).map { index ->
-            FeedItem(
-                key = "benchmark:$index",
-                serverId = "benchmark-$index",
-                pendingId = null,
-                channelId = "benchmark",
-                userId = "user-${index % 12}",
-                author = "User ${index % 12}",
-                message = if (index % 11 == 0) {
-                    "A benchmark link preview at row $index https://example.com/releases/$index"
-                } else if (index % 17 == 0) {
-                    "@channel benchmark broadcast mention at row $index"
-                } else if (index % 7 == 0) {
-                    "A longer benchmark message at row $index that wraps across multiple lines to exercise text layout without Markdown or attachments."
-                } else if (index % 13 == 0) {
-                    "A benchmark message with render-time smileys at row $index :) <3"
-                } else {
-                    "Benchmark message $index"
-                },
-                createAt = 1_700_000_000_000L + index * 1_000L,
-                updateAt = 1_700_000_000_000L + index * 1_000L,
-                deliveryState = DeliveryState.SENT,
-                linkPreviews = if (index % 11 == 0) {
-                    listOf(
-                        LinkPreview(
-                            url = "https://example.com/releases/$index",
-                            title = "Release notes $index",
-                            description = "A compact benchmark preview without a network image.",
-                            siteName = "Example",
-                        ),
-                    )
-                } else {
-                    emptyList()
-                },
-            )
+        val fixture = BenchmarkFixtures.create(mode, count)
+        benchmarkItems = fixture.items
+        benchmarkConnectionState.value = ConnectionState.CONNECTED
+        benchmarkUserPresence.value = fixture.presence
+        benchmarkMentionContext.value = fixture.mentionContext
+        benchmarkChannelUsers.value = fixture.users
+        currentUserId = fixture.mentionContext.currentUserId
+        container.configStore.setBackgroundPollingSettings(fixture.backgroundSettings)
+
+        val screen = fixture.screen
+        if (screen is ScreenState.Overview) {
+            overviewConversations.clear()
+            overviewConversations.addAll(screen.conversations)
+            overviewScreen = screen
+            lastReadyConversationScreen = null
+        } else if (screen is ScreenState.Conversation) {
+            lastReadyConversationScreen = screen
         }
-        val fixtureScreen = ScreenState.Conversation(
-            id = "benchmark",
-            title = "Performance fixture",
-        )
-        lastReadyConversationScreen = fixtureScreen
-        _screen.value = fixtureScreen
+        _screen.value = screen
     }
 
     fun openConversation(summary: ConversationSummary) {

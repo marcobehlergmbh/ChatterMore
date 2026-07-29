@@ -250,7 +250,10 @@ class MainActivity : ComponentActivity() {
             ?.let(Uri::parse)
             ?.let { AttachmentSelection(it, temporary = true) }
         if (BuildConfig.BENCHMARK_FIXTURES) {
-            viewModel.enableBenchmarkFixture(intent.getIntExtra(EXTRA_BENCHMARK_MESSAGE_COUNT, 2_000))
+            viewModel.enableBenchmarkFixture(
+                count = intent.getIntExtra(EXTRA_BENCHMARK_MESSAGE_COUNT, 2_000),
+                mode = intent.getStringExtra(EXTRA_BENCHMARK_SCREEN),
+            )
         }
         collectState()
         if (savedInstanceState == null) acceptIncomingShareIntent(intent)
@@ -1728,6 +1731,7 @@ class MainActivity : ComponentActivity() {
         const val EDIT_FOCUS_HOLD_MS = 800L
         const val EDIT_FOCUS_REASSERT_MS = 140L
         const val EXTRA_BENCHMARK_MESSAGE_COUNT = "benchmark_message_count"
+        const val EXTRA_BENCHMARK_SCREEN = "benchmark_screen"
         const val STATE_SCROLL_ITEM_KEY = "scroll_item_key"
         const val STATE_SCROLL_POSITION = "scroll_position"
         const val STATE_SCROLL_OFFSET = "scroll_offset"

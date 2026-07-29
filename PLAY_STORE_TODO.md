@@ -13,18 +13,19 @@ Completed locally:
 - Adaptive, round, and legacy launcher icons.
 - Local release signing and a signed, verified Android App Bundle.
 - Privacy policy draft, Data Safety worksheet, and store-listing copy.
+- Play Store icon, feature graphic, and five sanitized phone screenshots.
 - Unit tests, Android lint, debug build, release build, and benchmark build.
 
 Still requires manual or external work:
 
 - Back up the upload keystore and its credentials somewhere secure.
 - Enter the published GitHub privacy-policy URL in Google Play.
-- Capture the five sanitized store screenshots.
 - Set up a reviewer-accessible Mattermost server and test account.
 - Complete the Play Console forms, declarations, testing requirements, and
   submission.
-- Run the final release on real supported Android devices; no device was
-  attached during the local verification.
+- Run the final release on real supported Android devices. The sanitized
+  benchmark fixtures were captured on a Pixel 7a running API 37, but the signed
+  release still requires its full device test pass.
 
 Current build facts:
 
@@ -38,9 +39,9 @@ Next actions:
 
 1. Back up `.signing/chattermore-upload.jks` and
    `.signing/keystore.properties`.
-2. Create the Play Store graphics and screenshots.
-3. Create the Play Console app and reviewer environment, then enter the
+2. Create the Play Console app and reviewer environment, then enter the
    published privacy-policy URL.
+3. Run the signed release through the final device test matrix.
 
 ## App identity
 
@@ -108,7 +109,7 @@ deletion feature should not be required.
 - [x] Provide the support email address `info@marcobehler.com`.
 - [x] Create a 512 x 512 PNG store icon.
 - [x] Create a 1024 x 500 PNG or JPEG feature graphic.
-- [ ] Capture at least two accurate phone screenshots.
+- [x] Capture at least two accurate phone screenshots.
 - [ ] Choose the app category, countries/regions and Free/Paid status.
 
 Starting as **Free** is simplest. An app that has been offered for free cannot

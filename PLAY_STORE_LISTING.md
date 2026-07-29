@@ -106,7 +106,7 @@ customer information.
 - Screen: Joined channels and direct messages with unread indicators.
 - Caption: **Conversations at a glance**
 - Alt text: **ChatterMore conversation list showing channels, direct messages,
-  unread indicators, and user presence.**
+  unread indicators, and recent activity times.**
 
 ### 2. Active channel
 
@@ -126,8 +126,8 @@ customer information.
 
 - Screen: Image grid, file card, or video preview plus the attachment composer.
 - Caption: **Share photos, videos, and files**
-- Alt text: **ChatterMore displaying message attachments and controls for
-  adding photos, videos, and documents.**
+- Alt text: **ChatterMore displaying image, document, and video file cards, a
+  rollout link preview, and the message composer.**
 
 ### 5. Notification settings
 
@@ -149,4 +149,4 @@ customer information.
 
 - [x] 512 x 512 PNG Play store icon
 - [x] 1024 x 500 feature graphic
-- [ ] Five sanitized phone screenshots
+- [x] Five sanitized phone screenshots
