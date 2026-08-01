@@ -209,6 +209,58 @@ class MattermostApiTest {
     }
 
     @Test
+    fun `searches team posts with an authenticated cancellable request`() = runBlocking {
+        var captured: CapturedRequest? = null
+        val client = OkHttpClient.Builder()
+            .addInterceptor { chain ->
+                val request = chain.request()
+                captured = request.capture()
+                Response.Builder()
+                    .request(request)
+                    .protocol(Protocol.HTTP_1_1)
+                    .code(200)
+                    .message("OK")
+                    .body(
+                        """
+                        {
+                          "order":["post-1"],
+                          "posts":{
+                            "post-1":{
+                              "id":"post-1",
+                              "channel_id":"channel-1",
+                              "user_id":"user-1",
+                              "message":"release notes",
+                              "create_at":10,
+                              "update_at":10
+                            }
+                          },
+                          "matches":{"post-1":["release"]}
+                        }
+                        """.trimIndent().toResponseBody(JSON_MEDIA_TYPE),
+                    )
+                    .build()
+            }
+            .build()
+
+        val page = MattermostApi(client).searchPosts(
+            session(),
+            teamId = "team-1",
+            terms = "release in:channel-1",
+            page = 2,
+            perPage = 50,
+        )
+
+        assertEquals(listOf("post-1"), page.orderedPosts.map { it.id })
+        assertEquals("/api/v4/teams/team-1/posts/search", captured?.path)
+        assertEquals("POST", captured?.method)
+        assertEquals("Bearer session-token", captured?.authorization)
+        val body = mattermostJson.parseToJsonElement(requireNotNull(captured).body).jsonObject
+        assertEquals("release in:channel-1", body.string("terms"))
+        assertEquals(2, body.int("page"))
+        assertEquals(50, body.int("per_page"))
+    }
+
+    @Test
     fun `gets or creates a direct channel for exactly two users`() = runBlocking {
         var captured: CapturedRequest? = null
         val client = OkHttpClient.Builder()

@@ -253,6 +253,37 @@ class MattermostJsonTest {
     }
 
     @Test
+    fun `parses ordered search posts and server match terms`() {
+        val page = parsePostSearchPage(
+            """
+            {
+              "order":["post-2","post-1"],
+              "posts":{
+                "post-1":{"id":"post-1","channel_id":"channel-1","user_id":"user-1","message":"release notes","create_at":1,"update_at":1},
+                "post-2":{"id":"post-2","channel_id":"channel-1","user_id":"user-2","message":"release ready","create_at":2,"update_at":2}
+              },
+              "matches":{"post-1":["release","notes"],"post-2":["release"]}
+            }
+            """.trimIndent(),
+        )
+
+        assertEquals(listOf("post-2", "post-1"), page.orderedPosts.map { it.id })
+        assertEquals(listOf("release", "notes"), page.matches["post-1"])
+    }
+
+    @Test
+    fun `creates bounded post search body`() {
+        val json = mattermostJson.parseToJsonElement(
+            searchPostsBody("release in:town-square", page = -1, perPage = 500),
+        ).jsonObject
+
+        assertEquals("release in:town-square", json.string("terms"))
+        assertFalse(json.boolean("is_or_search"))
+        assertEquals(0, json.int("page"))
+        assertEquals(200, json.int("per_page"))
+    }
+
+    @Test
     fun `creates username password login body`() {
         val json = mattermostJson.parseToJsonElement(loginBody("marco", "quote\"slash\\" )).jsonObject
 

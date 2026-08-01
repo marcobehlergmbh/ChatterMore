@@ -11,6 +11,7 @@ import com.marcobehler.chattermore.model.MattermostTeam
 import com.marcobehler.chattermore.model.MattermostUser
 import com.marcobehler.chattermore.model.MattermostUserStatus
 import com.marcobehler.chattermore.model.PostPage
+import com.marcobehler.chattermore.model.PostSearchPage
 import com.marcobehler.chattermore.model.ServerConfig
 import com.marcobehler.chattermore.model.TeamNotFoundException
 import com.marcobehler.chattermore.model.UploadCapabilities
@@ -185,6 +186,25 @@ class MattermostApi(
             .build()
         val responseBody = execute(request(config, url))
         return withContext(Dispatchers.Default) { parsePostPage(responseBody) }
+    }
+
+    suspend fun searchPosts(
+        config: AuthenticatedServerConfig,
+        teamId: String,
+        terms: String,
+        page: Int = 0,
+        perPage: Int = 50,
+    ): PostSearchPage {
+        require(teamId.isNotBlank()) { "The team ID cannot be blank" }
+        require(terms.isNotBlank()) { "Search terms cannot be blank" }
+        val body = searchPostsBody(terms, page, perPage).toRequestBody(JSON_MEDIA_TYPE)
+        val responseBody = execute(
+            request(config, apiUrl(config, "teams", teamId, "posts", "search"))
+                .newBuilder()
+                .post(body)
+                .build(),
+        )
+        return withContext(Dispatchers.Default) { parsePostSearchPage(responseBody) }
     }
 
     suspend fun users(config: AuthenticatedServerConfig, ids: Collection<String>): List<MattermostUser> {

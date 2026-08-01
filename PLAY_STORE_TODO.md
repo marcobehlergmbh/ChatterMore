@@ -3,7 +3,29 @@
 Work through this list from top to bottom. The first submission can proceed
 without implementing every possible user-generated-content policy feature.
 
-Last updated: July 29, 2026
+Last updated: August 1, 2026
+
+## Current Play Console checkpoint
+
+The Play developer account has been verified, the `ChatterMore` Play Console
+app has been created, and version `0.1.0` (`versionCode` 1) has been rolled out
+to internal testing. CLI publishing is configured, and version `0.1.1`
+(`versionCode` 2) was successfully built, uploaded, and rolled out to internal
+testing through the Google Play Developer API on August 1, 2026.
+
+Resume with:
+
+1. Add the internal tester accounts and open the tester opt-in link.
+2. Install the Play-distributed build on the Pixel 7a and complete the signed
+   release smoke test.
+3. Enter the public privacy-policy URL:
+   `https://github.com/marcobehlergmbh/ChatterMore/blob/main/PRIVACY_POLICY.md`
+4. Continue with the reviewer environment, store listing, declarations, Data
+   Safety form, and remaining testing requirements described below.
+
+The privacy-policy URL and sanitized screenshot directory were verified as
+publicly accessible on July 29, 2026. The upload keystore and its credentials
+have been backed up securely outside Git.
 
 ## Current status
 
@@ -15,10 +37,11 @@ Completed locally:
 - Privacy policy draft, Data Safety worksheet, and store-listing copy.
 - Play Store icon, feature graphic, and five sanitized phone screenshots.
 - Unit tests, Android lint, debug build, release build, and benchmark build.
+- Guarded CLI publishing to the Play internal track with versioned local AAB
+  and R8 mapping archives.
 
 Still requires manual or external work:
 
-- Back up the upload keystore and its credentials somewhere secure.
 - Enter the published GitHub privacy-policy URL in Google Play.
 - Set up a reviewer-accessible Mattermost server and test account.
 - Complete the Play Console forms, declarations, testing requirements, and
@@ -30,18 +53,17 @@ Still requires manual or external work:
 Current build facts:
 
 - `targetSdk`: 36
-- `versionCode`: 1
+- `versionCode`: 2
 - Release bundle: `app/build/outputs/bundle/release/app-release.aab`
 - Bundle signature: verified locally
 - Upload certificate SHA-256 fingerprint: documented in `README.md`
 
 Next actions:
 
-1. Back up `.signing/chattermore-upload.jks` and
-   `.signing/keystore.properties`.
-2. Create the Play Console app and reviewer environment, then enter the
-   published privacy-policy URL.
-3. Run the signed release through the final device test matrix.
+1. Add internal testers, opt in, and install the Play-distributed build.
+2. Run the internal release through the final device test matrix.
+3. Create the reviewer environment and enter the published privacy-policy URL.
+4. Complete the store listing, declarations, and Data Safety form.
 
 ## App identity
 
@@ -59,10 +81,10 @@ permanent Play package name.
 ## Release signing
 
 - [x] Generate a permanent upload keystore.
-- [ ] Back up the keystore and credentials somewhere secure outside Git.
+- [x] Back up the keystore and credentials somewhere secure outside Git.
 - [x] Configure the Gradle `release` build to use the upload key without
       committing secrets.
-- [ ] Enable Play App Signing.
+- [x] Enable Play App Signing.
 - [x] Produce a signed release `.aab` and verify its signature.
 
 The local release bundle is signed with the ChatterMore upload key. Back up
@@ -117,9 +139,9 @@ later be changed to paid under the same package name.
 
 ## Play Console declarations
 
-- [ ] Create and verify the Play developer account.
-- [ ] Verify developer contact details and identity.
-- [ ] Register/check the package name in Play Console.
+- [x] Create and verify the Play developer account.
+- [x] Verify developer contact details and identity.
+- [x] Register/check the package name in Play Console.
 - [ ] Declare that the app contains no ads.
 - [ ] Complete the target-audience questionnaire.
 - [ ] Complete the content-rating questionnaire.
@@ -141,10 +163,10 @@ If using a personal developer account created after November 13, 2023:
 - [ ] Verify uploads, downloads, camera/gallery/file selection and Android
       sharing.
 - [ ] Verify notification permission and background message checks.
-- [ ] Confirm `targetSdk` remains at API 36 or newer.
-- [ ] Confirm `versionCode` is unique for the upload.
-- [ ] Save the release R8 `mapping.txt` file.
-- [ ] Upload the signed `.aab` to the appropriate test track.
+- [x] Confirm `targetSdk` remains at API 36 or newer.
+- [x] Confirm `versionCode` is unique for the latest upload.
+- [x] Save the release R8 `mapping.txt` file for version `0.1.1` (2).
+- [x] Upload the signed `.aab` to the internal testing track.
 - [ ] Review the pre-launch report and fix crashes or serious compatibility
       failures.
 - [ ] Submit the production release for review.

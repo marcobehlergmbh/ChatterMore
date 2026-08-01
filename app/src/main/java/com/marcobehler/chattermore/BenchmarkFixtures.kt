@@ -28,6 +28,7 @@ object BenchmarkFixtures {
     const val MODE_DIRECT_MESSAGE = "store-direct-message"
     const val MODE_ATTACHMENTS = "store-attachments"
     const val MODE_SETTINGS = "store-settings"
+    const val MODE_QUOTES = "quote-preview"
 
     private const val CURRENT_USER_ID = "fixture-marco"
     private const val CURRENT_USERNAME = "marco"
@@ -103,6 +104,10 @@ object BenchmarkFixtures {
                     mode = BackgroundNotificationMode.MENTIONS,
                     showPreview = true,
                 ),
+            )
+            MODE_QUOTES -> base.copy(
+                screen = conversationScreen("fixture-quote-preview", "Quote Preview"),
+                items = quoteItems(now),
             )
             else -> base
         }
@@ -233,6 +238,49 @@ object BenchmarkFixtures {
                     siteName = "Example",
                 ),
             ),
+        ),
+    )
+
+    private fun quoteItems(now: Long): List<FeedItem> = listOf(
+        item(
+            1,
+            "fixture-quote-preview",
+            "fixture-maya",
+            "Maya Chen",
+            "I pulled the key points from the rollout plan:",
+            now,
+            12,
+        ),
+        item(
+            2,
+            "fixture-quote-preview",
+            "fixture-daniel",
+            "Daniel Brooks",
+            "> Keep the first release focused.\n" +
+                "> Verify notifications on a real device.\n" +
+                "> Document the reviewer login clearly.",
+            now,
+            9,
+        ),
+        item(
+            3,
+            "fixture-quote-preview",
+            CURRENT_USER_ID,
+            "You",
+            "That’s a good summary. @maya I’ll use it for the closed test.",
+            now,
+            6,
+        ),
+        item(
+            4,
+            "fixture-quote-preview",
+            "fixture-elena",
+            "Elena Ortiz",
+            "Here is the exact decision:\n\n" +
+                "> Ship the focused feature set first.\n\n" +
+                "We can expand after feedback.",
+            now,
+            3,
         ),
     )
 

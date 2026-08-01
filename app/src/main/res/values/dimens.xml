@@ -5,4 +5,6 @@
     <dimen name="message_inner_vertical_spacing">1dp</dimen>
     <dimen name="message_group_min_height">60dp</dimen>
     <dimen name="message_avatar_placeholder_padding">7dp</dimen>
+    <dimen name="quote_stripe_width">3dp</dimen>
+    <dimen name="quote_gap_width">10dp</dimen>
 </resources>

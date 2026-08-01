@@ -2,6 +2,7 @@ import java.util.Properties
 
 plugins {
     id("com.android.application")
+    id("com.github.triplet.play")
 }
 
 val signingPropertiesFile = rootProject.file(".signing/keystore.properties")
@@ -10,6 +11,11 @@ val signingProperties = Properties().apply {
         signingPropertiesFile.inputStream().use(::load)
     }
 }
+val chatterMoreVersionCode = providers.gradleProperty("chattermoreVersionCode")
+    .map(String::toInt)
+    .getOrElse(2)
+val chatterMoreVersionName = providers.gradleProperty("chattermoreVersionName")
+    .getOrElse("0.1.1")
 
 android {
     namespace = "com.marcobehler.chattermore"
@@ -19,8 +25,8 @@ android {
         applicationId = "com.marcobehler.chattermore"
         minSdk = 29
         targetSdk = 36
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = chatterMoreVersionCode
+        versionName = chatterMoreVersionName
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -70,6 +76,14 @@ android {
     buildFeatures {
         buildConfig = true
     }
+}
+
+play {
+    providers.environmentVariable("GOOGLE_PLAY_SERVICE_ACCOUNT_JSON").orNull?.let { path ->
+        serviceAccountCredentials.set(file(path))
+    }
+    track.set("internal")
+    defaultToAppBundles.set(true)
 }
 
 dependencies {

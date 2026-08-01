@@ -6,4 +6,7 @@ local.properties
 *.iml
 captures/
 .signing/
+.release-artifacts/
+play-publisher*.json
+google-play-service-account*.json
 .DS_Store

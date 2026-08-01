@@ -9,6 +9,7 @@ import com.marcobehler.chattermore.model.MattermostTeam
 import com.marcobehler.chattermore.model.MattermostUser
 import com.marcobehler.chattermore.model.MattermostUserStatus
 import com.marcobehler.chattermore.model.PostPage
+import com.marcobehler.chattermore.model.PostSearchPage
 import com.marcobehler.chattermore.model.UNKNOWN_FILE_SIZE
 import com.marcobehler.chattermore.model.UploadCapabilities
 import kotlinx.serialization.json.Json
@@ -214,6 +215,24 @@ internal fun parsePostPage(json: String): PostPage {
     return PostPage(order = order, posts = posts)
 }
 
+internal fun parsePostSearchPage(json: String): PostSearchPage {
+    val value = mattermostJson.parseToJsonElement(json).jsonObject
+    val order = value["order"]?.arrayOrNull()
+        ?.mapNotNull { it.jsonPrimitive.contentOrNull }
+        .orEmpty()
+    val posts = value["posts"]?.objectOrNull()
+        ?.mapValues { (_, post) -> parsePost(post.jsonObject) }
+        .orEmpty()
+    val matches = value["matches"]?.objectOrNull()
+        ?.mapValues { (_, terms) ->
+            terms.arrayOrNull()
+                ?.mapNotNull { it.jsonPrimitive.contentOrNull }
+                .orEmpty()
+        }
+        .orEmpty()
+    return PostSearchPage(order = order, posts = posts, matches = matches)
+}
+
 internal fun createPostBody(
     channelId: String,
     message: String,
@@ -230,6 +249,18 @@ internal fun createPostBody(
 
 internal fun patchPostBody(message: String): String = buildJsonObject {
     put("message", message)
+}.toString()
+
+internal fun searchPostsBody(
+    terms: String,
+    page: Int,
+    perPage: Int,
+): String = buildJsonObject {
+    put("terms", terms)
+    put("is_or_search", false)
+    put("include_deleted_channels", false)
+    put("page", page.coerceAtLeast(0))
+    put("per_page", perPage.coerceIn(1, 200))
 }.toString()
 
 internal fun loginBody(username: String, password: String): String = buildJsonObject {

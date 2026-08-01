@@ -67,6 +67,7 @@ import com.marcobehler.chattermore.model.FeedFile
 import com.marcobehler.chattermore.model.FeedItem
 import com.marcobehler.chattermore.model.LinkPreview
 import com.marcobehler.chattermore.model.MattermostUser
+import com.marcobehler.chattermore.model.MessageSearchResult
 import com.marcobehler.chattermore.model.ServerConfig
 import com.marcobehler.chattermore.background.AppVisibility
 import com.marcobehler.chattermore.background.BackgroundNotificationMode
@@ -87,6 +88,7 @@ import com.marcobehler.chattermore.ui.ImageZoomState
 import com.marcobehler.chattermore.ui.MentionAutocomplete
 import com.marcobehler.chattermore.ui.MentionSuggestionAdapter
 import com.marcobehler.chattermore.ui.MessageScrollAnchor
+import com.marcobehler.chattermore.ui.SearchResultAdapter
 import com.marcobehler.chattermore.ui.SunoPlaybackController
 import com.marcobehler.chattermore.ui.YouTubeVideo
 import com.marcobehler.chattermore.ui.VideoPlaybackErrorDetails
@@ -130,8 +132,20 @@ class MainActivity : ComponentActivity() {
     private lateinit var conversationList: RecyclerView
     private lateinit var overviewEmpty: TextView
     private lateinit var conversationBackButton: ImageButton
+    private lateinit var channelHeader: View
     private lateinit var channelTitle: TextView
     private lateinit var connectionStatus: TextView
+    private lateinit var searchMessagesButton: ImageButton
+    private lateinit var messageSearchBar: View
+    private lateinit var messageSearchInput: EditText
+    private lateinit var messageSearchPanel: View
+    private lateinit var messageSearchResults: RecyclerView
+    private lateinit var messageSearchStatus: TextView
+    private lateinit var messageSearchEmpty: TextView
+    private lateinit var messageSearchProgress: ProgressBar
+    private lateinit var messageViewport: View
+    private lateinit var messageComposerDivider: View
+    private lateinit var messageComposer: View
     private lateinit var messageList: RecyclerView
     private lateinit var editModeHeader: View
     private lateinit var editModeLabel: TextView
@@ -145,6 +159,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var newMessagesButton: Button
     private lateinit var layoutManager: LinearLayoutManager
     private lateinit var adapter: FeedAdapter
+    private lateinit var searchResultAdapter: SearchResultAdapter
     private lateinit var conversationAdapter: ConversationAdapter
     private lateinit var draftAttachmentAdapter: DraftAttachmentAdapter
     private lateinit var mentionSuggestionAdapter: MentionSuggestionAdapter
@@ -170,6 +185,11 @@ class MainActivity : ComponentActivity() {
     private val conversationBackCallback = object : OnBackPressedCallback(false) {
         override fun handleOnBackPressed() {
             returnToOverview()
+        }
+    }
+    private val messageSearchBackCallback = object : OnBackPressedCallback(false) {
+        override fun handleOnBackPressed() {
+            closeMessageSearch()
         }
     }
     private val galleryLauncher = registerForActivityResult(
@@ -235,12 +255,14 @@ class MainActivity : ComponentActivity() {
         bindViews()
         onBackPressedDispatcher.addCallback(this, conversationBackCallback)
         onBackPressedDispatcher.addCallback(this, attachmentBackCallback)
+        onBackPressedDispatcher.addCallback(this, messageSearchBackCallback)
         configureInsets()
         configureAttachmentComposer()
         configureMentionAutocomplete()
         configureActions()
         configureConversationOverview()
         configureFeed()
+        configureMessageSearch()
         pendingScrollAnchor = savedInstanceState?.scrollAnchor()
         pendingImageRestore = savedInstanceState?.fullscreenImageRestore()
         pendingVideoRestore = savedInstanceState?.videoPlaybackRestore()
@@ -343,8 +365,20 @@ class MainActivity : ComponentActivity() {
         conversationList = findViewById(R.id.conversationList)
         overviewEmpty = findViewById(R.id.overviewEmpty)
         conversationBackButton = findViewById(R.id.conversationBackButton)
+        channelHeader = findViewById(R.id.channelHeader)
         channelTitle = findViewById(R.id.channelTitle)
         connectionStatus = findViewById(R.id.connectionStatus)
+        searchMessagesButton = findViewById(R.id.searchMessagesButton)
+        messageSearchBar = findViewById(R.id.messageSearchBar)
+        messageSearchInput = findViewById(R.id.messageSearchInput)
+        messageSearchPanel = findViewById(R.id.messageSearchPanel)
+        messageSearchResults = findViewById(R.id.messageSearchResults)
+        messageSearchStatus = findViewById(R.id.messageSearchStatus)
+        messageSearchEmpty = findViewById(R.id.messageSearchEmpty)
+        messageSearchProgress = findViewById(R.id.messageSearchProgress)
+        messageViewport = findViewById(R.id.messageViewport)
+        messageComposerDivider = findViewById(R.id.messageComposerDivider)
+        messageComposer = findViewById(R.id.messageComposer)
         messageList = findViewById(R.id.messageList)
         editModeHeader = findViewById(R.id.editModeHeader)
         editModeLabel = findViewById(R.id.editModeLabel)
@@ -412,6 +446,21 @@ class MainActivity : ComponentActivity() {
         }
         cancelEditButton.setOnClickListener { viewModel.cancelEdit() }
         conversationBackButton.setOnClickListener { returnToOverview() }
+        searchMessagesButton.setOnClickListener {
+            dismissMentionSuggestions()
+            setAttachmentActionsVisible(false)
+            viewModel.openMessageSearch()
+        }
+        findViewById<ImageButton>(R.id.closeMessageSearchButton).setOnClickListener {
+            closeMessageSearch()
+        }
+        messageSearchInput.doAfterTextChanged {
+            viewModel.updateMessageSearchQuery(it?.toString().orEmpty())
+        }
+        messageSearchInput.setOnEditorActionListener { _, _, _ ->
+            hideKeyboard()
+            true
+        }
         findViewById<ImageButton>(R.id.settingsButton).setOnClickListener {
             showConnectionSettings()
         }
@@ -881,10 +930,31 @@ class MainActivity : ComponentActivity() {
         })
     }
 
+    private fun configureMessageSearch() {
+        searchResultAdapter = SearchResultAdapter(::openMessageSearchResult)
+        messageSearchResults.layoutManager = LinearLayoutManager(this)
+        messageSearchResults.adapter = searchResultAdapter
+        messageSearchResults.itemAnimator = null
+        messageSearchResults.setItemViewCacheSize(12)
+        messageSearchResults.addOnScrollListener(object : RecyclerView.OnScrollListener() {
+            override fun onScrolled(recyclerView: RecyclerView, dx: Int, dy: Int) {
+                if (dy <= 0) return
+                val manager = recyclerView.layoutManager as? LinearLayoutManager ?: return
+                if (
+                    searchResultAdapter.itemCount > 0 &&
+                    manager.findLastVisibleItemPosition() >= searchResultAdapter.itemCount - 8
+                ) {
+                    viewModel.loadMoreMessageSearchResults()
+                }
+            }
+        })
+    }
+
     private fun collectState() {
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
                 launch { viewModel.screen.collect(::renderScreen) }
+                launch { viewModel.messageSearch.collect(::renderMessageSearch) }
                 launch { viewModel.mutations.collect(::applyMutation) }
                 launch { viewModel.conversationMutations.collect(conversationAdapter::apply) }
                 launch { viewModel.connectionState.collect(::renderConnection) }
@@ -915,6 +985,67 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun renderMessageSearch(state: MessageSearchUiState) {
+        val wasActive = messageSearchPanel.isVisible
+        messageSearchBackCallback.isEnabled = state.active
+        channelHeader.isVisible = !state.active
+        messageSearchBar.isVisible = state.active
+        messageSearchPanel.isVisible = state.active
+        messageViewport.isVisible = !state.active
+        messageComposerDivider.isVisible = !state.active
+        messageComposer.isVisible = !state.active
+        if (!state.active) {
+            searchResultAdapter.replace(emptyList())
+            if (messageSearchInput.text.isNotEmpty()) messageSearchInput.text.clear()
+            messageSearchInput.clearFocus()
+            return
+        }
+
+        val conversationTitle = (viewModel.screen.value as? ScreenState.Conversation)?.title.orEmpty()
+        messageSearchInput.hint = getString(R.string.search_in_conversation, conversationTitle)
+        if (messageSearchInput.text.toString() != state.query) {
+            messageSearchInput.setText(state.query)
+            messageSearchInput.setSelection(messageSearchInput.text.length)
+        }
+        searchResultAdapter.replace(state.results)
+
+        val searchable = state.query.count(Char::isLetterOrDigit) >= 3
+        messageSearchStatus.text = when {
+            state.error != null -> state.error
+            !searchable -> getString(R.string.search_type_more)
+            state.searching && state.showingLocalResults ->
+                getString(R.string.search_local_results)
+            state.searching && state.results.isNotEmpty() ->
+                getString(R.string.searching_more_messages)
+            state.searching -> getString(R.string.searching_messages)
+            else -> resources.getQuantityString(
+                R.plurals.search_result_count,
+                state.results.size,
+                state.results.size,
+            )
+        }
+        messageSearchStatus.setTextColor(
+            ContextCompat.getColor(
+                this,
+                if (state.error == null) R.color.text_secondary else R.color.error,
+            ),
+        )
+        messageSearchProgress.isVisible = state.searching && state.results.isEmpty()
+        messageSearchEmpty.isVisible =
+            searchable && !state.searching && state.error == null && state.results.isEmpty()
+        messageSearchEmpty.setText(R.string.search_no_results)
+
+        if (!wasActive) {
+            messageSearchInput.post {
+                messageSearchInput.requestFocus()
+                WindowCompat.getInsetsController(window, messageSearchInput)
+                    .show(WindowInsetsCompat.Type.ime())
+                val manager = getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager
+                manager.showSoftInput(messageSearchInput, InputMethodManager.SHOW_IMPLICIT)
+            }
+        }
+    }
+
     private fun beginMessageEdit(item: FeedItem): Boolean {
         val candidateAnchor = captureItemAnchor(item.key)
         editFocusAnchor = candidateAnchor
@@ -936,6 +1067,41 @@ class MainActivity : ComponentActivity() {
         normalDraftAfterEdit = null
         messageInput.text.clear()
         viewModel.openDirectMessage(userId, title)
+    }
+
+    private fun closeMessageSearch() {
+        hideKeyboard()
+        messageSearchInput.clearFocus()
+        viewModel.closeMessageSearch()
+    }
+
+    private fun openMessageSearchResult(result: MessageSearchResult) {
+        val position = adapter.positionOfServerId(result.postId)
+        if (position != RecyclerView.NO_POSITION) {
+            closeMessageSearch()
+            messageList.post {
+                layoutManager.scrollToPositionWithOffset(position, messageList.height / 3)
+                messageList.post { adapter.flashServerId(result.postId) }
+            }
+            return
+        }
+
+        val message = result.message.ifBlank {
+            if (result.fileCount > 0) {
+                resources.getQuantityString(
+                    R.plurals.search_attachment_count,
+                    result.fileCount,
+                    result.fileCount,
+                )
+            } else {
+                getString(R.string.unsupported_message)
+            }
+        }
+        AlertDialog.Builder(this)
+            .setTitle(result.author)
+            .setMessage(message)
+            .setPositiveButton(android.R.string.ok, null)
+            .show()
     }
 
     private fun returnToOverview() {

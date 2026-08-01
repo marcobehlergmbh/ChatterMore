@@ -24,6 +24,7 @@ class BenchmarkFixturesTest {
         assertTrue(fixture(BenchmarkFixtures.MODE_DIRECT_MESSAGE).screen is ScreenState.Conversation)
         assertTrue(fixture(BenchmarkFixtures.MODE_ATTACHMENTS).items.any { it.files.isNotEmpty() })
         assertTrue(fixture(BenchmarkFixtures.MODE_SETTINGS).backgroundSettings.enabled)
+        assertTrue(fixture(BenchmarkFixtures.MODE_QUOTES).items.any { it.message.startsWith(">") })
     }
 
     @Test

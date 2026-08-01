@@ -96,6 +96,7 @@
         android:visibility="gone">
 
         <LinearLayout
+            android:id="@+id/overviewHeader"
             android:layout_width="match_parent"
             android:layout_height="56dp"
             android:background="@color/surface"
@@ -180,6 +181,7 @@
         android:visibility="gone">
 
         <LinearLayout
+            android:id="@+id/channelHeader"
             android:layout_width="match_parent"
             android:layout_height="56dp"
             android:background="@color/surface"
@@ -226,6 +228,16 @@
             </LinearLayout>
 
             <ImageButton
+                android:id="@+id/searchMessagesButton"
+                android:layout_width="48dp"
+                android:layout_height="48dp"
+                android:background="?android:attr/selectableItemBackgroundBorderless"
+                android:contentDescription="@string/search_messages"
+                android:padding="12dp"
+                android:src="@drawable/ic_search"
+                android:tooltipText="@string/search_messages" />
+
+            <ImageButton
                 android:id="@+id/settingsButton"
                 android:layout_width="48dp"
                 android:layout_height="48dp"
@@ -236,12 +248,51 @@
                 android:tooltipText="@string/change_connection" />
         </LinearLayout>
 
+        <LinearLayout
+            android:id="@+id/messageSearchBar"
+            android:layout_width="match_parent"
+            android:layout_height="56dp"
+            android:background="@color/surface"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:paddingStart="8dp"
+            android:paddingEnd="4dp"
+            android:visibility="gone">
+
+            <EditText
+                android:id="@+id/messageSearchInput"
+                android:layout_width="0dp"
+                android:layout_height="48dp"
+                android:layout_weight="1"
+                android:background="@null"
+                android:imeOptions="actionSearch"
+                android:importantForAutofill="no"
+                android:inputType="text"
+                android:maxLines="1"
+                android:paddingHorizontal="8dp"
+                android:singleLine="true"
+                android:textColor="@color/text_primary"
+                android:textColorHint="@color/text_secondary" />
+
+            <ImageButton
+                android:id="@+id/closeMessageSearchButton"
+                android:layout_width="48dp"
+                android:layout_height="48dp"
+                android:background="?android:attr/selectableItemBackgroundBorderless"
+                android:contentDescription="@string/close_search"
+                android:padding="12dp"
+                android:src="@drawable/ic_close"
+                android:tint="@color/text_secondary"
+                android:tooltipText="@string/close_search" />
+        </LinearLayout>
+
         <View
             android:layout_width="match_parent"
             android:layout_height="1dp"
             android:background="@color/divider" />
 
         <FrameLayout
+            android:id="@+id/messageViewport"
             android:layout_width="match_parent"
             android:layout_height="0dp"
             android:layout_weight="1">
@@ -274,7 +325,54 @@
                 android:visibility="gone" />
         </FrameLayout>
 
+        <FrameLayout
+            android:id="@+id/messageSearchPanel"
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1"
+            android:visibility="gone">
+
+            <androidx.recyclerview.widget.RecyclerView
+                android:id="@+id/messageSearchResults"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:clipToPadding="false"
+                android:paddingTop="40dp"
+                android:paddingBottom="12dp"
+                android:scrollbars="vertical" />
+
+            <TextView
+                android:id="@+id/messageSearchStatus"
+                android:layout_width="match_parent"
+                android:layout_height="40dp"
+                android:background="@color/surface"
+                android:gravity="center_vertical"
+                android:maxLines="2"
+                android:paddingHorizontal="16dp"
+                android:textColor="@color/text_secondary"
+                android:textSize="12sp" />
+
+            <TextView
+                android:id="@+id/messageSearchEmpty"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_gravity="center"
+                android:gravity="center"
+                android:padding="24dp"
+                android:textColor="@color/text_secondary"
+                android:visibility="gone" />
+
+            <ProgressBar
+                android:id="@+id/messageSearchProgress"
+                style="?android:attr/progressBarStyleSmall"
+                android:layout_width="32dp"
+                android:layout_height="32dp"
+                android:layout_gravity="center"
+                android:visibility="gone" />
+        </FrameLayout>
+
         <View
+            android:id="@+id/messageComposerDivider"
             android:layout_width="match_parent"
             android:layout_height="1dp"
             android:background="@color/divider" />

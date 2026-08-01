@@ -70,6 +70,23 @@
     <string name="send_failed">Failed. Tap to retry.</string>
     <string name="unsupported_message">Unsupported message</string>
     <string name="new_messages">New messages</string>
+    <string name="search_messages">Search messages</string>
+    <string name="search_in_conversation">Search in %1$s</string>
+    <string name="close_search">Close search</string>
+    <string name="search_type_more">Type at least 3 characters</string>
+    <string name="searching_messages">Searching all messages…</string>
+    <string name="searching_more_messages">Loading more results…</string>
+    <string name="search_local_results">Showing loaded matches while the server searches…</string>
+    <string name="search_no_results">No matching messages</string>
+    <string name="search_thread_reply">Reply in thread</string>
+    <plurals name="search_result_count">
+        <item quantity="one">%1$d result</item>
+        <item quantity="other">%1$d results</item>
+    </plurals>
+    <plurals name="search_attachment_count">
+        <item quantity="one">%1$d attachment</item>
+        <item quantity="other">%1$d attachments</item>
+    </plurals>
     <string name="today">Today</string>
     <string name="yesterday">Yesterday</string>
     <string name="mentions_you">Mentions you</string>

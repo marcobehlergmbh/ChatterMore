@@ -14,6 +14,7 @@ import android.text.Spannable
 import android.text.SpannableStringBuilder
 import android.text.method.LinkMovementMethod
 import android.text.style.ForegroundColorSpan
+import android.text.style.QuoteSpan
 import android.text.style.RelativeSizeSpan
 import android.text.style.StyleSpan
 import android.view.HapticFeedbackConstants
@@ -127,6 +128,8 @@ class FeedAdapter(
                 item = item,
                 isContinuation = isContinuation(items.getOrNull(position - 1), item),
             )
+        } else if (payloads.any { it == PAYLOAD_FLASH }) {
+            holder.flash()
         } else {
             super.onBindViewHolder(holder, position, payloads)
         }
@@ -217,6 +220,13 @@ class FeedAdapter(
 
     fun positionOfServerId(serverId: String): Int =
         items.indexOfFirst { it.serverId == serverId }
+
+    fun flashServerId(serverId: String) {
+        val position = positionOfServerId(serverId)
+        if (position != RecyclerView.NO_POSITION) {
+            notifyItemChanged(position, PAYLOAD_FLASH)
+        }
+    }
 
     private fun isContinuation(previous: FeedItem?, current: FeedItem): Boolean =
         MessageGrouping.isContinuation(
@@ -358,7 +368,7 @@ class FeedAdapter(
             bindPresence(item, isContinuation)
             val renderedMessage = messageText(item, itemView.context)
             body.text = renderedMessage.text
-            body.visibility = if (item.message.isBlank()) View.GONE else View.VISIBLE
+            body.visibility = if (renderedMessage.text.isBlank()) View.GONE else View.VISIBLE
             bindAttention(
                 if (item.userId == mentionContext.currentUserId) {
                     MessageEmphasis.NONE
@@ -682,6 +692,10 @@ class FeedAdapter(
             }
         }
 
+        fun flash() {
+            playTapGlow()
+        }
+
         private fun resetTapGlow() {
             val glow = tapGlowDrawable
             tapGlowAnimator?.removeAllListeners()
@@ -699,6 +713,7 @@ class FeedAdapter(
         const val PAYLOAD_GROUPING = "grouping"
         const val PAYLOAD_PRESENCE = "presence"
         const val PAYLOAD_MENTIONS = "mentions"
+        const val PAYLOAD_FLASH = "flash"
         const val TAP_GLOW_CORNER_DP = 12f
         const val TAP_GLOW_PEAK_ALPHA = 105
         const val TAP_GLOW_IN_MS = 120L
@@ -725,12 +740,34 @@ class FeedAdapter(
             broadcastText = ContextCompat.getColor(context, R.color.mention_broadcast_text),
             broadcastBackground = ContextCompat.getColor(context, R.color.mention_broadcast_background),
         ).also { mentionStyle = it }
-        return MessageLinkParser.render(
+        val formatted = MessageLinkParser.render(
             message,
             mentionContext,
             style,
             onUserClick = onMentionUserClick,
-        ).also { rendered ->
+        )
+        val quotes = MessageQuoteParser.parse(formatted.text.toString())
+        val rendered = if (quotes == null) {
+            formatted
+        } else {
+            val quotedText = SpannableStringBuilder(formatted.text)
+            quotes.markerRanges.asReversed().forEach { marker ->
+                quotedText.delete(marker.start, marker.end)
+            }
+            val quoteColor = ContextCompat.getColor(context, R.color.quote_accent)
+            val stripeWidth = context.resources.getDimensionPixelSize(R.dimen.quote_stripe_width)
+            val gapWidth = context.resources.getDimensionPixelSize(R.dimen.quote_gap_width)
+            quotes.quoteRanges.forEach { range ->
+                quotedText.setSpan(
+                    QuoteSpan(quoteColor, stripeWidth, gapWidth),
+                    range.start,
+                    range.end,
+                    Spannable.SPAN_EXCLUSIVE_EXCLUSIVE,
+                )
+            }
+            formatted.copy(text = quotedText)
+        }
+        return rendered.also {
             if (rendered.text !== message || rendered.emphasis != MessageEmphasis.NONE || '@' in message) {
                 formattedMessages.put(message, rendered)
             }

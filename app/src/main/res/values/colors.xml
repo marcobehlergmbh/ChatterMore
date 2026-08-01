@@ -10,6 +10,8 @@
     <color name="divider">#2C2C2C</color>
     <color name="attachment_surface">#171717</color>
     <color name="chattermore_blue">#75A7FF</color>
+    <color name="quote_accent">#5F8FD9</color>
+    <color name="search_match_background">#315A8C</color>
     <color name="mention_user_text">#A8C7FA</color>
     <color name="mention_user_background">#263750</color>
     <color name="mention_direct_text">#FFFFFF</color>

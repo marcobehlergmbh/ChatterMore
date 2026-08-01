@@ -13,6 +13,7 @@ import com.marcobehler.chattermore.data.AttachmentSelection
 import com.marcobehler.chattermore.data.AttachmentStatus
 import com.marcobehler.chattermore.data.DraftAttachment
 import com.marcobehler.chattermore.data.IncomingShare
+import com.marcobehler.chattermore.data.MessageSearch
 import com.marcobehler.chattermore.model.ConnectionState
 import com.marcobehler.chattermore.model.AuthenticatedServerConfig
 import com.marcobehler.chattermore.model.ChannelNotFoundException
@@ -24,6 +25,7 @@ import com.marcobehler.chattermore.model.MattermostException
 import com.marcobehler.chattermore.model.MattermostFile
 import com.marcobehler.chattermore.model.MattermostChannel
 import com.marcobehler.chattermore.model.MattermostUser
+import com.marcobehler.chattermore.model.MessageSearchResult
 import com.marcobehler.chattermore.model.ConversationMutation
 import com.marcobehler.chattermore.model.ConversationSummary
 import com.marcobehler.chattermore.model.InitializedDirectory
@@ -34,7 +36,9 @@ import com.marcobehler.chattermore.model.TeamNotFoundException
 import com.marcobehler.chattermore.model.UploadCapabilities
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -44,10 +48,12 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import java.io.FileNotFoundException
 import java.io.IOException
+import java.util.Locale
 
 sealed interface ScreenState {
     data object Loading : ScreenState
@@ -93,6 +99,17 @@ data class ComposerState(
         get() = resolvingCount > 0 || attachments.any { it.status !is AttachmentStatus.Ready }
 }
 
+data class MessageSearchUiState(
+    val active: Boolean = false,
+    val query: String = "",
+    val results: List<MessageSearchResult> = emptyList(),
+    val searching: Boolean = false,
+    val showingLocalResults: Boolean = false,
+    val error: String? = null,
+    val page: Int = 0,
+    val canLoadMore: Boolean = false,
+)
+
 class MainViewModel(
     private val container: AppContainer,
     unsupportedMessage: String,
@@ -108,8 +125,18 @@ class MainViewModel(
     private val _messageEdit = MutableStateFlow<MessageEditState?>(null)
     private val _composer = MutableStateFlow(ComposerState())
     private val _incomingShares = MutableStateFlow<List<IncomingShare>>(emptyList())
+    private val _messageSearch = MutableStateFlow(MessageSearchUiState())
     private val _composerMessages = MutableSharedFlow<String>(extraBufferCapacity = 8)
     private val uploadJobs = mutableMapOf<String, Job>()
+    private var messageSearchJob: Job? = null
+    private var messageSearchGeneration = 0
+    private val searchUsersById = mutableMapOf<String, MattermostUser>()
+    private val messageSearchCache =
+        object : LinkedHashMap<MessageSearchCacheKey, CachedMessageSearch>(16, 0.75f, true) {
+            override fun removeEldestEntry(
+                eldest: MutableMap.MutableEntry<MessageSearchCacheKey, CachedMessageSearch>,
+            ): Boolean = size > MAX_CACHED_SEARCHES
+        }
     private val uploadSemaphore = Semaphore(MAX_CONCURRENT_UPLOADS)
     private val benchmarkConnectionState = MutableStateFlow(ConnectionState.CONNECTED)
     private val benchmarkUserPresence =
@@ -135,6 +162,7 @@ class MainViewModel(
     val messageEdit: StateFlow<MessageEditState?> = _messageEdit.asStateFlow()
     val composer: StateFlow<ComposerState> = _composer.asStateFlow()
     val incomingShares: StateFlow<List<IncomingShare>> = _incomingShares.asStateFlow()
+    val messageSearch: StateFlow<MessageSearchUiState> = _messageSearch.asStateFlow()
     val composerMessages: SharedFlow<String> = _composerMessages.asSharedFlow()
     val mutations: SharedFlow<FeedMutation> = repository.mutations
     val conversationMutations: SharedFlow<ConversationMutation> = repository.conversationMutations
@@ -162,6 +190,11 @@ class MainViewModel(
             }
         }
         viewModelScope.launch {
+            repository.channelUsers.collect { users ->
+                users.forEach { searchUsersById[it.id] = it }
+            }
+        }
+        viewModelScope.launch {
             repository.conversationMutations.collect { mutation ->
                 overviewScreen ?: return@collect
                 when (mutation) {
@@ -184,6 +217,7 @@ class MainViewModel(
         }
         viewModelScope.launch {
             repository.mutations.collect { mutation ->
+                configuredChannel?.id?.let(::invalidateMessageSearchCache)
                 if (!container.configStore.backgroundPollingSettings().enabled) return@collect
                 val channelId = configuredChannel?.id ?: return@collect
                 mutation.itemsForCheckpoint()
@@ -217,6 +251,9 @@ class MainViewModel(
 
     fun connect(config: ServerConfig, persist: Boolean = true) {
         if ((_screen.value as? ScreenState.Setup)?.connecting == true) return
+        closeMessageSearch()
+        messageSearchCache.clear()
+        searchUsersById.clear()
         if (persist && container.configStore.backgroundPollingSettings().enabled) {
             backgroundSettingsGeneration++
             BackgroundPollingScheduler.cancel(container.context)
@@ -465,6 +502,183 @@ class MainViewModel(
     }
 
     suspend fun snapshot(): List<FeedItem> = benchmarkItems ?: repository.snapshot()
+
+    fun openMessageSearch() {
+        if (screen.value.readyConversation() == null) return
+        messageSearchJob?.cancel()
+        messageSearchGeneration++
+        _messageSearch.value = MessageSearchUiState(active = true)
+    }
+
+    fun closeMessageSearch() {
+        messageSearchJob?.cancel()
+        messageSearchJob = null
+        messageSearchGeneration++
+        _messageSearch.value = MessageSearchUiState()
+    }
+
+    fun updateMessageSearchQuery(query: String) {
+        if (!_messageSearch.value.active) return
+        messageSearchJob?.cancel()
+        val generation = ++messageSearchGeneration
+        val normalizedQuery = query.trim()
+        if (!MessageSearch.isSearchable(normalizedQuery)) {
+            _messageSearch.value = MessageSearchUiState(
+                active = true,
+                query = query,
+            )
+            return
+        }
+
+        _messageSearch.value = MessageSearchUiState(
+            active = true,
+            query = query,
+            searching = true,
+        )
+        messageSearchJob = viewModelScope.launch {
+            val localTerms = MessageSearch.highlightTerms(normalizedQuery)
+            val localResults = withContext(Dispatchers.Default) {
+                snapshot().asReversed()
+                    .asSequence()
+                    .filter { it.serverId != null }
+                    .filter { MessageSearch.locallyMatches(it.message, localTerms) }
+                    .take(MAX_LOCAL_SEARCH_RESULTS)
+                    .map { item ->
+                        MessageSearchResult(
+                            postId = requireNotNull(item.serverId),
+                            channelId = item.channelId,
+                            rootId = "",
+                            userId = item.userId,
+                            author = item.author,
+                            message = item.message,
+                            createAt = item.createAt,
+                            fileCount = item.fileIds.size,
+                            matchTerms = localTerms,
+                        )
+                    }
+                    .toList()
+            }
+            if (generation != messageSearchGeneration) return@launch
+            _messageSearch.value = _messageSearch.value.copy(
+                results = localResults,
+                showingLocalResults = localResults.isNotEmpty(),
+            )
+
+            if (BuildConfig.BENCHMARK_FIXTURES) {
+                _messageSearch.value = _messageSearch.value.copy(searching = false)
+                return@launch
+            }
+            delay(SEARCH_DEBOUNCE_MS)
+            if (generation != messageSearchGeneration) return@launch
+
+            val channel = configuredChannel ?: return@launch finishSearchWithUnavailableState()
+            val config = authenticatedConfig ?: return@launch finishSearchWithUnavailableState()
+            val team = authenticatedTeam ?: return@launch finishSearchWithUnavailableState()
+            val key = MessageSearchCacheKey(
+                channelId = channel.id,
+                query = normalizedQuery.lowercase(Locale.ROOT),
+            )
+            messageSearchCache[key]?.let { cached ->
+                if (generation == messageSearchGeneration) {
+                    _messageSearch.value = _messageSearch.value.copy(
+                        results = cached.results,
+                        searching = false,
+                        showingLocalResults = false,
+                        error = null,
+                        page = cached.page,
+                        canLoadMore = cached.canLoadMore,
+                    )
+                }
+                return@launch
+            }
+
+            runCatching {
+                searchServerPage(
+                    config = config,
+                    teamId = team.id,
+                    channel = channel,
+                    query = normalizedQuery,
+                    page = 0,
+                )
+            }.onSuccess { result ->
+                if (generation != messageSearchGeneration) return@onSuccess
+                messageSearchCache[key] = result
+                _messageSearch.value = _messageSearch.value.copy(
+                    results = result.results,
+                    searching = false,
+                    showingLocalResults = false,
+                    error = null,
+                    page = result.page,
+                    canLoadMore = result.canLoadMore,
+                )
+            }.onFailure { error ->
+                if (error is CancellationException) throw error
+                if (generation != messageSearchGeneration) return@onFailure
+                _messageSearch.value = _messageSearch.value.copy(
+                    searching = false,
+                    error = searchMessage(error),
+                )
+            }
+        }
+    }
+
+    fun loadMoreMessageSearchResults() {
+        val state = _messageSearch.value
+        if (
+            !state.active ||
+            state.searching ||
+            !state.canLoadMore ||
+            !MessageSearch.isSearchable(state.query)
+        ) {
+            return
+        }
+        val channel = configuredChannel ?: return
+        val config = authenticatedConfig ?: return
+        val team = authenticatedTeam ?: return
+        val query = state.query.trim()
+        val generation = ++messageSearchGeneration
+        messageSearchJob?.cancel()
+        _messageSearch.value = state.copy(searching = true, error = null)
+        messageSearchJob = viewModelScope.launch {
+            runCatching {
+                searchServerPage(
+                    config = config,
+                    teamId = team.id,
+                    channel = channel,
+                    query = query,
+                    page = state.page + 1,
+                )
+            }.onSuccess { next ->
+                if (generation != messageSearchGeneration) return@onSuccess
+                val existingIds = state.results.mapTo(mutableSetOf(), MessageSearchResult::postId)
+                val newResults = next.results.filterNot { it.postId in existingIds }
+                val combined = state.results + newResults
+                val canLoadMore = next.canLoadMore && newResults.isNotEmpty()
+                val cached = CachedMessageSearch(
+                    results = combined,
+                    page = next.page,
+                    canLoadMore = canLoadMore,
+                )
+                messageSearchCache[
+                    MessageSearchCacheKey(channel.id, query.lowercase(Locale.ROOT))
+                ] = cached
+                _messageSearch.value = state.copy(
+                    results = combined,
+                    searching = false,
+                    showingLocalResults = false,
+                    page = next.page,
+                    canLoadMore = canLoadMore,
+                )
+            }.onFailure { error ->
+                if (error is CancellationException) throw error
+                if (generation != messageSearchGeneration) return@onFailure
+                _messageSearch.value = state.copy(
+                    searching = false,
+                    error = searchMessage(error),
+                )
+            }
+        }
+    }
 
     fun loadOlder() {
         if (loadingOlder) return
@@ -748,6 +962,7 @@ class MainViewModel(
     }
 
     private fun clearConversationBoundComposerState() {
+        closeMessageSearch()
         clearAttachments()
         _messageEdit.value = null
     }
@@ -761,6 +976,7 @@ class MainViewModel(
         authenticatedConfig = directory.config
         authenticatedUser = directory.user
         authenticatedTeam = directory.team
+        searchUsersById[directory.user.id] = directory.user
         container.imageLoader.configure(directory.config)
         overviewConversations.clear()
         overviewConversations.addAll(directory.conversations)
@@ -841,6 +1057,87 @@ class MainViewModel(
         }
     }
 
+    private suspend fun searchServerPage(
+        config: AuthenticatedServerConfig,
+        teamId: String,
+        channel: MattermostChannel,
+        query: String,
+        page: Int,
+    ): CachedMessageSearch {
+        val response = container.api.searchPosts(
+            config = config,
+            teamId = teamId,
+            terms = MessageSearch.scopedTerms(query, channel),
+            page = page,
+            perPage = SEARCH_PAGE_SIZE,
+        )
+        val posts = response.orderedPosts.filter { it.channelId == channel.id }
+        val missingUserIds = posts.asSequence()
+            .map { it.userId }
+            .filter(String::isNotBlank)
+            .filterNot(searchUsersById::containsKey)
+            .distinct()
+            .toList()
+        if (missingUserIds.isNotEmpty()) {
+            runCatching { container.api.users(config, missingUserIds) }
+                .getOrDefault(emptyList())
+                .forEach { user ->
+                    searchUsersById[user.id] = user
+                }
+        }
+        val authorNames = posts.associate { post ->
+            post.userId to searchUsersById[post.userId]?.displayName
+        }
+        val fallbackTerms = MessageSearch.highlightTerms(query)
+        val results = withContext(Dispatchers.Default) {
+            posts.map { post ->
+                MessageSearchResult(
+                    postId = post.id,
+                    channelId = post.channelId,
+                    rootId = post.rootId,
+                    userId = post.userId,
+                    author = authorNames[post.userId]
+                        ?: "Unknown user",
+                    message = post.message,
+                    createAt = post.createAt,
+                    fileCount = post.fileIds.size,
+                    matchTerms = MessageSearch.highlightTerms(
+                        query,
+                        response.matches[post.id].orEmpty(),
+                    ).ifEmpty { fallbackTerms },
+                )
+            }
+        }
+        return CachedMessageSearch(
+            results = results,
+            page = page,
+            canLoadMore = response.order.size >= SEARCH_PAGE_SIZE,
+        )
+    }
+
+    private fun finishSearchWithUnavailableState() {
+        _messageSearch.value = _messageSearch.value.copy(
+            searching = false,
+            error = "Search is unavailable until the conversation reconnects.",
+        )
+    }
+
+    private fun invalidateMessageSearchCache(channelId: String) {
+        messageSearchCache.keys.removeAll { it.channelId == channelId }
+    }
+
+    private fun searchMessage(error: Throwable): String = when (error) {
+        is MattermostException -> when (error.statusCode) {
+            400 -> "The server could not understand these search terms."
+            401 -> "The session expired. Reconnect before searching."
+            403 -> "This account is not allowed to search this conversation."
+            429 -> "Search is temporarily rate-limited. Try again shortly."
+            else -> error.message
+        }
+        is IOException -> "Couldn’t search the server. Check the connection and try again."
+        else -> error.message ?: "Search failed. Try again."
+    }
+
     private fun attachmentMessage(error: Throwable): String = when (error) {
         is MattermostException -> when (error.statusCode) {
             403 -> "This account is not allowed to upload files."
@@ -881,6 +1178,10 @@ class MainViewModel(
         const val MAX_ATTACHMENTS = 10
         const val MAX_CONCURRENT_UPLOADS = 2
         const val PROGRESS_INTERVAL_NANOS = 100_000_000L
+        const val SEARCH_DEBOUNCE_MS = 250L
+        const val SEARCH_PAGE_SIZE = 50
+        const val MAX_LOCAL_SEARCH_RESULTS = 40
+        const val MAX_CACHED_SEARCHES = 12
 
         fun formatBytes(bytes: Long): String {
             val mib = bytes / (1024.0 * 1024.0)
@@ -888,6 +1189,17 @@ class MainViewModel(
         }
     }
 }
+
+private data class MessageSearchCacheKey(
+    val channelId: String,
+    val query: String,
+)
+
+private data class CachedMessageSearch(
+    val results: List<MessageSearchResult>,
+    val page: Int,
+    val canLoadMore: Boolean,
+)
 
 private fun ScreenState.readyConversation(): ScreenState.Conversation? =
     (this as? ScreenState.Conversation)?.takeUnless { it.loading }

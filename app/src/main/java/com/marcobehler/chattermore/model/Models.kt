@@ -241,6 +241,27 @@ data class PostPage(
         get() = order.mapNotNull(posts::get)
 }
 
+data class PostSearchPage(
+    val order: List<String>,
+    val posts: Map<String, MattermostPost>,
+    val matches: Map<String, List<String>> = emptyMap(),
+) {
+    val orderedPosts: List<MattermostPost>
+        get() = order.mapNotNull(posts::get)
+}
+
+data class MessageSearchResult(
+    val postId: String,
+    val channelId: String,
+    val rootId: String,
+    val userId: String,
+    val author: String,
+    val message: String,
+    val createAt: Long,
+    val fileCount: Int,
+    val matchTerms: List<String>,
+)
+
 enum class DeliveryState {
     SENT,
     OPTIMISTIC,

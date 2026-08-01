@@ -1,0 +1,1 @@
+Adds quoted-message styling and fast message search inside channels and direct conversations.

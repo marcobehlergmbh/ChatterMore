@@ -87,6 +87,30 @@ Upload certificate SHA-256 fingerprint:
 52:6B:25:C0:BB:F8:CF:E5:48:F0:ED:47:68:8D:1A:89:A4:9D:23:D2:63:55:EF:A1:FE:A7:B7:48:66:40:E1:F4
 ```
 
+## Google Play internal releases
+
+The repository uses Gradle Play Publisher. Keep the Google Play service-account
+JSON outside the repository at
+`~/.config/chattermore/play-publisher.json` with `0600` permissions. To test,
+build, sign, upload, and roll out a new version to internal testers, run:
+
+```bash
+scripts/publish-internal.sh 3 0.1.2 completed
+```
+
+Every upload requires a version code greater than all previous uploads. Use
+`draft` instead of `completed` to leave the release unrolled in Play Console.
+The script runs unit tests and lint before publishing, and preserves the signed
+AAB, its SHA-256 checksum, and its R8 mapping file under the Git-ignored
+`.release-artifacts/<version-name>-<version-code>/` directory.
+
+Set `GOOGLE_PLAY_SERVICE_ACCOUNT_JSON` when the credential is stored elsewhere:
+
+```bash
+GOOGLE_PLAY_SERVICE_ACCOUNT_JSON=/secure/path/play-publisher.json \
+    scripts/publish-internal.sh 3 0.1.2 completed
+```
+
 ## Connect
 
 1. Use a Mattermost account that belongs to at least one team.
