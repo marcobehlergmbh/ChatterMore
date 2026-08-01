@@ -75,6 +75,7 @@ import com.marcobehler.chattermore.background.BackgroundPollingWorker
 import com.marcobehler.chattermore.data.AttachmentSelection
 import com.marcobehler.chattermore.data.IncomingShare
 import com.marcobehler.chattermore.data.IncomingShareParser
+import com.marcobehler.chattermore.data.MessageSearch
 import com.marcobehler.chattermore.data.combineSharedDraftText
 import com.marcobehler.chattermore.network.MattermostImageLoader
 import com.marcobehler.chattermore.ui.DraftAttachmentAdapter
@@ -308,7 +309,9 @@ class MainActivity : ComponentActivity() {
             val anchor = pendingScrollAnchor ?: captureScrollAnchor()
             lifecycleScope.launch {
                 adapter.replace(viewModel.snapshot())
-                messageList.post { restoreScrollAnchor(anchor) }
+                messageList.post {
+                    if (!completeMessageSearchJumpIfReady()) restoreScrollAnchor(anchor)
+                }
             }
         }
     }
@@ -995,11 +998,14 @@ class MainActivity : ComponentActivity() {
         messageComposerDivider.isVisible = !state.active
         messageComposer.isVisible = !state.active
         if (!state.active) {
+            messageSearchInput.isEnabled = true
             searchResultAdapter.replace(emptyList())
             if (messageSearchInput.text.isNotEmpty()) messageSearchInput.text.clear()
             messageSearchInput.clearFocus()
             return
         }
+
+        messageSearchInput.isEnabled = state.openingPostId == null
 
         val conversationTitle = (viewModel.screen.value as? ScreenState.Conversation)?.title.orEmpty()
         messageSearchInput.hint = getString(R.string.search_in_conversation, conversationTitle)
@@ -1012,6 +1018,7 @@ class MainActivity : ComponentActivity() {
         val searchable = state.query.count(Char::isLetterOrDigit) >= 3
         messageSearchStatus.text = when {
             state.error != null -> state.error
+            state.openingPostId != null -> getString(R.string.search_opening_message)
             !searchable -> getString(R.string.search_type_more)
             state.searching && state.showingLocalResults ->
                 getString(R.string.search_local_results)
@@ -1030,9 +1037,14 @@ class MainActivity : ComponentActivity() {
                 if (state.error == null) R.color.text_secondary else R.color.error,
             ),
         )
-        messageSearchProgress.isVisible = state.searching && state.results.isEmpty()
+        messageSearchProgress.isVisible =
+            state.openingPostId != null || state.searching && state.results.isEmpty()
         messageSearchEmpty.isVisible =
-            searchable && !state.searching && state.error == null && state.results.isEmpty()
+            searchable &&
+                !state.searching &&
+                state.openingPostId == null &&
+                state.error == null &&
+                state.results.isEmpty()
         messageSearchEmpty.setText(R.string.search_no_results)
 
         if (!wasActive) {
@@ -1043,6 +1055,9 @@ class MainActivity : ComponentActivity() {
                 val manager = getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager
                 manager.showSoftInput(messageSearchInput, InputMethodManager.SHOW_IMPLICIT)
             }
+        }
+        if (state.openingPostId != null) {
+            messageSearchPanel.post(::completeMessageSearchJumpIfReady)
         }
     }
 
@@ -1076,32 +1091,31 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun openMessageSearchResult(result: MessageSearchResult) {
-        val position = adapter.positionOfServerId(result.postId)
+        if (viewModel.messageSearch.value.openingPostId != null) return
+        val targetPostId = MessageSearch.targetPostId(result)
+        val position = adapter.positionOfServerId(targetPostId)
         if (position != RecyclerView.NO_POSITION) {
-            closeMessageSearch()
-            messageList.post {
-                layoutManager.scrollToPositionWithOffset(position, messageList.height / 3)
-                messageList.post { adapter.flashServerId(result.postId) }
-            }
+            closeAndScrollToMessage(targetPostId)
             return
         }
+        viewModel.loadMessageSearchResult(result)
+    }
 
-        val message = result.message.ifBlank {
-            if (result.fileCount > 0) {
-                resources.getQuantityString(
-                    R.plurals.search_attachment_count,
-                    result.fileCount,
-                    result.fileCount,
-                )
-            } else {
-                getString(R.string.unsupported_message)
-            }
+    private fun completeMessageSearchJumpIfReady(): Boolean {
+        val postId = viewModel.messageSearch.value.openingPostId ?: return false
+        if (adapter.positionOfServerId(postId) == RecyclerView.NO_POSITION) return false
+        closeAndScrollToMessage(postId)
+        return true
+    }
+
+    private fun closeAndScrollToMessage(postId: String) {
+        closeMessageSearch()
+        messageList.post {
+            val position = adapter.positionOfServerId(postId)
+            if (position == RecyclerView.NO_POSITION) return@post
+            layoutManager.scrollToPositionWithOffset(position, messageList.height / 3)
+            messageList.post { adapter.flashServerId(postId) }
         }
-        AlertDialog.Builder(this)
-            .setTitle(result.author)
-            .setMessage(message)
-            .setPositiveButton(android.R.string.ok, null)
-            .show()
     }
 
     private fun returnToOverview() {
@@ -1268,10 +1282,12 @@ class MainActivity : ComponentActivity() {
                     lifecycleScope.launch {
                         adapter.replace(viewModel.snapshot())
                         messageList.post {
-                            if (anchor == null) {
-                                scrollToBottom(smooth = false)
-                            } else {
-                                restoreScrollAnchor(anchor)
+                            if (!completeMessageSearchJumpIfReady()) {
+                                if (anchor == null) {
+                                    scrollToBottom(smooth = false)
+                                } else {
+                                    restoreScrollAnchor(anchor)
+                                }
                             }
                             scrollToPendingNotification()
                         }
@@ -1436,6 +1452,7 @@ class MainActivity : ComponentActivity() {
         if (editFocusAnchor != null) {
             messageList.doOnPreDraw { correctEditFocusAfterLayout() }
         }
+        completeMessageSearchJumpIfReady()
         if (pendingNotificationPostId != null) {
             messageList.post(::scrollToPendingNotification)
         }

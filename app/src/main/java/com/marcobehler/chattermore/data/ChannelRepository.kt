@@ -318,6 +318,61 @@ class ChannelRepository(
         }
     }
 
+    suspend fun loadMessageContext(channelId: String, postId: String): Boolean {
+        if (channelId.isBlank() || postId.isBlank()) return false
+        val token = activeToken()
+            ?.takeIf { it.conversation.channelId == channelId }
+            ?: return false
+        val (anchor, olderPage, newerPage) = coroutineScope {
+            val anchorRequest = async { api.post(config, postId) }
+            val olderRequest = async {
+                api.posts(
+                    config = config,
+                    channelId = channelId,
+                    before = postId,
+                    perPage = MESSAGE_CONTEXT_SIDE_SIZE,
+                )
+            }
+            val newerRequest = async {
+                api.posts(
+                    config = config,
+                    channelId = channelId,
+                    after = postId,
+                    perPage = MESSAGE_CONTEXT_SIDE_SIZE,
+                )
+            }
+            Triple(anchorRequest.await(), olderRequest.await(), newerRequest.await())
+        }
+        if (!isActive(token)) return false
+        require(
+            anchor.id == postId &&
+                anchor.channelId == channelId &&
+                anchor.rootId.isBlank() &&
+                anchor.deleteAt == 0L,
+        ) { "That message is no longer available in this conversation." }
+
+        val posts = (olderPage.orderedPosts + anchor + newerPage.orderedPosts)
+            .distinctBy(MattermostPost::id)
+        val profiles = cachedProfiles(posts)
+        val mutation = feedMutex.withLock {
+            if (!isActiveLocked(token)) return@withLock null
+            olderExhausted = false
+            activeConversationAtLatest = false
+            feed.replace(posts, profiles + currentUser)
+        } ?: return false
+        _mutations.emit(mutation)
+        scheduleMentionResolution(posts)
+        ensurePresence(posts.map(MattermostPost::userId))
+        scope.launch {
+            hydratePostProfiles(
+                generation = token.generation,
+                channelId = channelId,
+                posts = posts,
+            )
+        }
+        return true
+    }
+
     suspend fun refreshLatest() {
         if (!initialized || !refreshMutex.tryLock()) return
         _refreshing.value = true
@@ -1270,6 +1325,7 @@ class ChannelRepository(
         const val PAGE_SIZE = 100
         const val MAX_REFRESH_PAGES = 50
         const val MAX_HISTORY_SCAN_PAGES = 50
+        const val MESSAGE_CONTEXT_SIDE_SIZE = 25
         const val MAX_MENTION_LOOKUP_USERNAMES = 100
         const val UNCONFIRMED_GRACE_MS = 500L
         const val DIRECTORY_CACHE_WRITE_DELAY_MS = 250L

@@ -76,6 +76,7 @@
     <string name="search_type_more">Type at least 3 characters</string>
     <string name="searching_messages">Searching all messages…</string>
     <string name="searching_more_messages">Loading more results…</string>
+    <string name="search_opening_message">Opening message…</string>
     <string name="search_local_results">Showing loaded matches while the server searches…</string>
     <string name="search_no_results">No matching messages</string>
     <string name="search_thread_reply">Reply in thread</string>

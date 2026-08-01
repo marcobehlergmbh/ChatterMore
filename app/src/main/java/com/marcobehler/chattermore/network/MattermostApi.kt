@@ -188,6 +188,15 @@ class MattermostApi(
         return withContext(Dispatchers.Default) { parsePostPage(responseBody) }
     }
 
+    suspend fun post(
+        config: AuthenticatedServerConfig,
+        postId: String,
+    ): MattermostPost {
+        require(postId.isNotBlank()) { "The post ID cannot be blank" }
+        val responseBody = execute(request(config, apiUrl(config, "posts", postId)))
+        return withContext(Dispatchers.Default) { parsePost(responseBody) }
+    }
+
     suspend fun searchPosts(
         config: AuthenticatedServerConfig,
         teamId: String,

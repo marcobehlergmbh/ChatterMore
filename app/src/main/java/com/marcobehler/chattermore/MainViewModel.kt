@@ -108,6 +108,7 @@ data class MessageSearchUiState(
     val error: String? = null,
     val page: Int = 0,
     val canLoadMore: Boolean = false,
+    val openingPostId: String? = null,
 )
 
 class MainViewModel(
@@ -129,6 +130,7 @@ class MainViewModel(
     private val _composerMessages = MutableSharedFlow<String>(extraBufferCapacity = 8)
     private val uploadJobs = mutableMapOf<String, Job>()
     private var messageSearchJob: Job? = null
+    private var messageJumpJob: Job? = null
     private var messageSearchGeneration = 0
     private val searchUsersById = mutableMapOf<String, MattermostUser>()
     private val messageSearchCache =
@@ -506,6 +508,7 @@ class MainViewModel(
     fun openMessageSearch() {
         if (screen.value.readyConversation() == null) return
         messageSearchJob?.cancel()
+        messageJumpJob?.cancel()
         messageSearchGeneration++
         _messageSearch.value = MessageSearchUiState(active = true)
     }
@@ -513,6 +516,8 @@ class MainViewModel(
     fun closeMessageSearch() {
         messageSearchJob?.cancel()
         messageSearchJob = null
+        messageJumpJob?.cancel()
+        messageJumpJob = null
         messageSearchGeneration++
         _messageSearch.value = MessageSearchUiState()
     }
@@ -520,6 +525,8 @@ class MainViewModel(
     fun updateMessageSearchQuery(query: String) {
         if (!_messageSearch.value.active) return
         messageSearchJob?.cancel()
+        messageJumpJob?.cancel()
+        messageJumpJob = null
         val generation = ++messageSearchGeneration
         val normalizedQuery = query.trim()
         if (!MessageSearch.isSearchable(normalizedQuery)) {
@@ -622,11 +629,55 @@ class MainViewModel(
         }
     }
 
+    fun loadMessageSearchResult(result: MessageSearchResult) {
+        val state = _messageSearch.value
+        if (!state.active || state.openingPostId != null) return
+        val channel = configuredChannel
+        val targetPostId = MessageSearch.targetPostId(result)
+        if (
+            channel == null ||
+            result.channelId != channel.id ||
+            targetPostId.isBlank() ||
+            BuildConfig.BENCHMARK_FIXTURES
+        ) {
+            _messageSearch.value = state.copy(
+                error = "That message is unavailable in this conversation.",
+            )
+            return
+        }
+
+        messageSearchJob?.cancel()
+        messageSearchJob = null
+        messageSearchGeneration++
+        _messageSearch.value = state.copy(
+            searching = false,
+            showingLocalResults = false,
+            error = null,
+            openingPostId = targetPostId,
+        )
+        messageJumpJob?.cancel()
+        messageJumpJob = viewModelScope.launch {
+            try {
+                if (!repository.loadMessageContext(channel.id, targetPostId)) {
+                    failMessageJump(
+                        targetPostId,
+                        "That message is no longer available in this conversation.",
+                    )
+                }
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                failMessageJump(targetPostId, messageJumpMessage(error))
+            }
+        }
+    }
+
     fun loadMoreMessageSearchResults() {
         val state = _messageSearch.value
         if (
             !state.active ||
             state.searching ||
+            state.openingPostId != null ||
             !state.canLoadMore ||
             !MessageSearch.isSearchable(state.query)
         ) {
@@ -1136,6 +1187,27 @@ class MainViewModel(
         }
         is IOException -> "Couldn’t search the server. Check the connection and try again."
         else -> error.message ?: "Search failed. Try again."
+    }
+
+    private fun failMessageJump(postId: String, message: String) {
+        _messageSearch.update { state ->
+            if (!state.active || state.openingPostId != postId) state else state.copy(
+                openingPostId = null,
+                error = message,
+            )
+        }
+    }
+
+    private fun messageJumpMessage(error: Throwable): String = when (error) {
+        is MattermostException -> when (error.statusCode) {
+            401 -> "The session expired. Reconnect before opening this message."
+            403 -> "This account can no longer access that message."
+            404 -> "That message is no longer available."
+            429 -> "Message loading is temporarily rate-limited. Try again shortly."
+            else -> error.message
+        }
+        is IOException -> "Couldn’t load that message. Check the connection and try again."
+        else -> error.message ?: "Couldn’t load that message. Try again."
     }
 
     private fun attachmentMessage(error: Throwable): String = when (error) {

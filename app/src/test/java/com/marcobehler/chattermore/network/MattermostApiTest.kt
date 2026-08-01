@@ -261,6 +261,63 @@ class MattermostApiTest {
     }
 
     @Test
+    fun `loads one post by id with the authenticated endpoint`() = runBlocking {
+        var captured: CapturedRequest? = null
+        val client = OkHttpClient.Builder()
+            .addInterceptor { chain ->
+                val request = chain.request()
+                captured = request.capture()
+                Response.Builder()
+                    .request(request)
+                    .protocol(Protocol.HTTP_1_1)
+                    .code(200)
+                    .message("OK")
+                    .body(
+                        """{"id":"post-1","channel_id":"channel-1","user_id":"user-1","message":"target","create_at":10,"update_at":10}"""
+                            .toResponseBody(JSON_MEDIA_TYPE),
+                    )
+                    .build()
+            }
+            .build()
+
+        val post = MattermostApi(client).post(session(), "post-1")
+
+        assertEquals("post-1", post.id)
+        assertEquals("target", post.message)
+        assertEquals("/api/v4/posts/post-1", captured?.path)
+        assertEquals("GET", captured?.method)
+        assertEquals("Bearer session-token", captured?.authorization)
+    }
+
+    @Test
+    fun `loads bounded channel pages before and after a target`() = runBlocking {
+        val cursors = mutableListOf<Pair<String?, String?>>()
+        val pageSizes = mutableListOf<String?>()
+        val client = OkHttpClient.Builder()
+            .addInterceptor { chain ->
+                val request = chain.request()
+                cursors += request.url.queryParameter("before") to
+                    request.url.queryParameter("after")
+                pageSizes += request.url.queryParameter("per_page")
+                Response.Builder()
+                    .request(request)
+                    .protocol(Protocol.HTTP_1_1)
+                    .code(200)
+                    .message("OK")
+                    .body("""{"order":[],"posts":{}}""".toResponseBody(JSON_MEDIA_TYPE))
+                    .build()
+            }
+            .build()
+        val api = MattermostApi(client)
+
+        api.posts(session(), "channel-1", before = "post-1", perPage = 25)
+        api.posts(session(), "channel-1", after = "post-1", perPage = 25)
+
+        assertEquals(listOf("post-1" to null, null to "post-1"), cursors)
+        assertEquals(listOf("25", "25"), pageSizes)
+    }
+
+    @Test
     fun `gets or creates a direct channel for exactly two users`() = runBlocking {
         var captured: CapturedRequest? = null
         val client = OkHttpClient.Builder()

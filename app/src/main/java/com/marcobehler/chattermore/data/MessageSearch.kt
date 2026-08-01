@@ -1,9 +1,13 @@
 package com.marcobehler.chattermore.data
 
 import com.marcobehler.chattermore.model.MattermostChannel
+import com.marcobehler.chattermore.model.MessageSearchResult
 import java.util.Locale
 
 internal object MessageSearch {
+    fun targetPostId(result: MessageSearchResult): String =
+        result.rootId.ifBlank { result.postId }
+
     fun isSearchable(query: String): Boolean =
         query.count(Char::isLetterOrDigit) >= MIN_SEARCH_CHARACTERS
 
