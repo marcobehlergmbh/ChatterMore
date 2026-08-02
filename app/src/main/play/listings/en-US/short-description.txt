@@ -1,0 +1,1 @@
+An unofficial, fast and focused Mattermost client for Android.

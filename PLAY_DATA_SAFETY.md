@@ -1,6 +1,6 @@
 # Google Play Data Safety worksheet
 
-Last reviewed: July 29, 2026
+Last reviewed: August 1, 2026
 
 Use this worksheet when completing **Policy and programs > App content > Data
 safety** for ChatterMore in Google Play Console.
@@ -145,6 +145,23 @@ files the user deliberately selects or shares with the app.
 Files and filenames are transmitted only when the user selects, shares, or
 uploads them.
 
+### App activity
+
+#### In-app search history
+
+Examples in ChatterMore: search terms entered while searching messages inside
+a channel or direct conversation. These terms are sent to the selected
+Mattermost server to perform the search.
+
+| Question | Answer |
+| --- | --- |
+| Collected, shared, or both? | **Collected** |
+| Is this data processed ephemerally? | **No** |
+| Is collection required or optional? | **Optional** |
+| Purpose | **App functionality** |
+
+Message search is optional and does not run until the user enters a search.
+
 ## Data types not to select
 
 Do not select these for the current app:
@@ -159,7 +176,7 @@ Do not select these for the current app:
 - SMS or MMS
 - Calendar
 - Contacts
-- App interactions, search history, installed apps, or other actions
+- App interactions, installed apps, other user-generated content, or other actions
 - Web browsing history
 - Crash logs, diagnostics, or other performance data
 - Device or other IDs

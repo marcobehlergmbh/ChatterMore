@@ -1,0 +1,32 @@
+ChatterMore is an independent Android client for people who already use a Mattermost server. It keeps messaging fast and focused without trying to reproduce every feature of the official client.
+
+Connect to your existing HTTPS Mattermost server with your username and password, then access your joined channels and direct-message conversations from one lightweight app.
+
+WHAT YOU CAN DO
+
+- Browse joined channels and recent direct messages.
+- See unread conversations, mentions, and user presence.
+- Receive new messages in real time while the app is open.
+- Send and edit messages with fast, optimistic updates.
+- Upload photos, videos, audio, and documents.
+- Share text and files to ChatterMore from other Android apps.
+- View authenticated image previews and video attachments.
+- Open YouTube and link previews and play supported Suno links.
+- Download attachments after confirmation.
+- Enable optional background checks for message notifications.
+
+PRIVACY AND SECURITY
+
+- Connects directly to the Mattermost server you choose.
+- Requires HTTPS and blocks cleartext network traffic.
+- Encrypts saved credentials using Android Keystore.
+- Contains no advertising or analytics SDKs.
+- Disables Android cloud backup for app data.
+
+REQUIREMENTS AND SCOPE
+
+ChatterMore requires Android 10 or newer and an existing account on a Mattermost server that accepts username and password login. It does not create or host Mattermost accounts.
+
+ChatterMore is deliberately focused. Threads, reactions, calls, full Markdown rendering, background sockets, and push notifications are not currently included. Optional background checks are periodic and may be delayed by Android.
+
+ChatterMore is an unofficial, independently developed client. It is not affiliated with, endorsed by, or supported by Mattermost, Inc. Mattermost is a trademark of Mattermost, Inc.
