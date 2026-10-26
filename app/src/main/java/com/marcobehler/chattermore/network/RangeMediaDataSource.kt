@@ -5,7 +5,9 @@ import okhttp3.Call
 import okhttp3.HttpUrl
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import java.io.ByteArrayOutputStream
 import java.io.IOException
+import java.io.InputStream
 import kotlin.math.min
 
 /**
@@ -25,6 +27,7 @@ internal class RangeMediaDataSource(
             size > MAX_BLOCKS
     }
     private var size = -1L
+    private var prefix: ByteArray? = null
     private var fetchedBytes = 0L
     private var call: Call? = null
 
@@ -40,7 +43,7 @@ internal class RangeMediaDataSource(
 
     @Synchronized
     override fun getSize(): Long {
-        if (size < 0) block(0)
+        if (size < 0 && prefix == null) chunkAt(0)
         return size
     }
 
@@ -48,12 +51,15 @@ internal class RangeMediaDataSource(
     override fun readAt(position: Long, buffer: ByteArray, offset: Int, length: Int): Int {
         if (length == 0) return 0
         if (size in 0..position) return -1
-        val start = position - position % BLOCK_SIZE
-        val block = block(start)
-        val index = (position - start).toInt()
-        if (index >= block.size) return -1
-        val count = min(length, block.size - index)
-        System.arraycopy(block, index, buffer, offset, count)
+        val (chunkStart, chunk) = chunkAt(position)
+        val index = position - chunkStart
+        if (index >= chunk.size) {
+            // Past the buffered start of a file whose server ignored Range: that's all we may read.
+            if (prefix != null) throw IOException("Video frame byte budget exceeded")
+            return -1
+        }
+        val count = min(length.toLong(), chunk.size - index).toInt()
+        System.arraycopy(chunk, index.toInt(), buffer, offset, count)
         return count
     }
 
@@ -61,10 +67,20 @@ internal class RangeMediaDataSource(
     override fun close() {
         call?.cancel()
         blocks.clear()
+        prefix = null
     }
 
-    private fun block(start: Long): ByteArray {
-        blocks[start]?.let { return it }
+    /** Returns the start offset and bytes of the chunk holding [position], fetching it if needed. */
+    private fun chunkAt(position: Long): Pair<Long, ByteArray> {
+        prefix?.let { return 0L to it }
+        val start = position - position % BLOCK_SIZE
+        blocks[start]?.let { return start to it }
+        fetch(start)
+        prefix?.let { return 0L to it }
+        return start to blocks.getValue(start)
+    }
+
+    private fun fetch(start: Long) {
         if (!isWanted()) {
             cancelled = true
             throw IOException("Video frame no longer needed")
@@ -80,7 +96,7 @@ internal class RangeMediaDataSource(
                 .build(),
         )
         call = newCall
-        val bytes = try {
+        try {
             newCall.execute().use { response ->
                 // OkHttp drops Authorization on cross-host redirects; still refuse to read anything
                 // that didn't end up on HTTPS.
@@ -89,13 +105,32 @@ internal class RangeMediaDataSource(
                     transientFailure = response.code >= 500 || response.code in RETRYABLE_CODES
                     throw IOException("Video range request failed: ${response.code}")
                 }
-                // A 200 means the server ignored Range and would stream the whole file.
-                if (response.code != 206) throw IOException("Server does not support range requests")
-                size = parseTotalSize(response.header("Content-Range"))
-                    ?: throw IOException("Missing Content-Range total")
-                val body = response.body.bytes()
-                if (body.size > BLOCK_SIZE) throw IOException("Range response larger than requested")
-                body
+                when (response.code) {
+                    206 -> {
+                        size = parseTotalSize(response.header("Content-Range"))
+                            ?: throw IOException("Missing Content-Range total")
+                        val body = response.body.bytes()
+                        if (body.size > BLOCK_SIZE) throw IOException("Range response larger than requested")
+                        fetchedBytes += body.size
+                        blocks[start] = body
+                    }
+                    // Some servers and proxies ignore Range and stream the whole file from byte 0.
+                    // Keep the start of it, up to the budget; for typical phone videos the index and
+                    // first frames live there.
+                    200 -> {
+                        val total = response.body.contentLength()
+                        val (bytes, complete) = response.body.byteStream()
+                            .readUpTo(byteBudget - fetchedBytes)
+                        fetchedBytes += bytes.size
+                        size = when {
+                            complete -> bytes.size.toLong()
+                            else -> total
+                        }
+                        blocks.clear()
+                        prefix = bytes
+                    }
+                    else -> throw IOException("Unexpected video response: ${response.code}")
+                }
             }
         } catch (e: IOException) {
             if (!isWanted()) {
@@ -106,9 +141,6 @@ internal class RangeMediaDataSource(
             }
             throw e
         }
-        fetchedBytes += bytes.size
-        blocks[start] = bytes
-        return bytes
     }
 
     internal companion object {
@@ -122,6 +154,19 @@ internal class RangeMediaDataSource(
                 ?.trim()
                 ?.toLongOrNull()
                 ?.takeIf { it >= 0 }
+
+        /** Reads at most [limit] bytes; the flag says whether the stream ended within them. */
+        private fun InputStream.readUpTo(limit: Long): Pair<ByteArray, Boolean> {
+            val cap = limit.coerceIn(0, Int.MAX_VALUE.toLong()).toInt()
+            val output = ByteArrayOutputStream(min(cap, BLOCK_SIZE))
+            val buffer = ByteArray(16 * 1_024)
+            while (output.size() < cap) {
+                val count = read(buffer, 0, min(buffer.size, cap - output.size()))
+                if (count < 0) return output.toByteArray() to true
+                output.write(buffer, 0, count)
+            }
+            return output.toByteArray() to (read() < 0)
+        }
 
         private fun isNetworkFailure(e: IOException): Boolean =
             e is java.net.SocketTimeoutException ||

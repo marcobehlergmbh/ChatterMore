@@ -72,10 +72,29 @@ class RangeMediaDataSourceTest {
     }
 
     @Test
-    fun `refuses servers that ignore the range header`() {
-        val source = source(clientReturning(200))
+    fun `reads small videos whole when the server ignores the range header`() {
+        val requests = mutableListOf<Request>()
+        val source = source(wholeFileServer(requests))
 
-        assertThrows { source.size }
+        assertEquals(video.size.toLong(), source.size)
+        val buffer = ByteArray(32)
+        val tail = video.size.toLong() - buffer.size
+        assertEquals(buffer.size, source.readAt(tail, buffer, 0, buffer.size))
+        assertArrayEquals(video.copyOfRange(video.size - buffer.size, video.size), buffer)
+        assertEquals(-1, source.readAt(video.size.toLong(), buffer, 0, buffer.size))
+        assertEquals(1, requests.size)
+    }
+
+    @Test
+    fun `keeps only the budgeted start of large videos when the server ignores range`() {
+        val budget = block * 2L
+        val source = source(wholeFileServer(mutableListOf()), byteBudget = budget)
+
+        assertEquals(video.size.toLong(), source.size)
+        val buffer = ByteArray(4)
+        assertEquals(4, source.readAt(budget - 4, buffer, 0, buffer.size))
+        assertArrayEquals(video.copyOfRange(budget.toInt() - 4, budget.toInt()), buffer)
+        assertThrows { source.readAt(budget, buffer, 0, buffer.size) }
         assertFalse(source.transientFailure)
     }
 
@@ -125,6 +144,19 @@ class RangeMediaDataSourceTest {
                     .build()
             },
         )
+        .build()
+
+    private fun wholeFileServer(requests: MutableList<Request>): OkHttpClient = OkHttpClient.Builder()
+        .addInterceptor { chain ->
+            requests += chain.request()
+            Response.Builder()
+                .request(chain.request())
+                .protocol(Protocol.HTTP_1_1)
+                .code(200)
+                .message("OK")
+                .body(video.toResponseBody())
+                .build()
+        }
         .build()
 
     private fun clientReturning(status: Int): OkHttpClient = OkHttpClient.Builder()
