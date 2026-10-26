@@ -18,10 +18,15 @@ import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.put
 import java.nio.charset.StandardCharsets
 
-class ConversationSummaryCache(context: Context) {
+interface ConversationCache {
+    suspend fun load(key: ConversationSummaryCache.Key): List<ConversationSummary>
+    suspend fun save(key: ConversationSummaryCache.Key, conversations: Collection<ConversationSummary>)
+}
+
+class ConversationSummaryCache(context: Context) : ConversationCache {
     private val preferences = context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)
 
-    suspend fun load(key: Key): List<ConversationSummary> = withContext(Dispatchers.IO) {
+    override suspend fun load(key: Key): List<ConversationSummary> = withContext(Dispatchers.IO) {
         val encoded = preferences.getString(key.preferenceKey(), null) ?: return@withContext emptyList()
         runCatching {
             mattermostJson.parseToJsonElement(encoded).jsonArray.mapNotNull { element ->
@@ -54,7 +59,7 @@ class ConversationSummaryCache(context: Context) {
         }.getOrDefault(emptyList())
     }
 
-    suspend fun save(key: Key, conversations: Collection<ConversationSummary>) =
+    override suspend fun save(key: Key, conversations: Collection<ConversationSummary>) =
         withContext(Dispatchers.IO) {
             val encoded = buildJsonArray {
                 conversations.forEach { summary ->

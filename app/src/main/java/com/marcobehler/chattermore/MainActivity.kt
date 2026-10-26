@@ -71,6 +71,7 @@ import com.marcobehler.chattermore.model.MessageSearchResult
 import com.marcobehler.chattermore.model.ServerConfig
 import com.marcobehler.chattermore.background.AppVisibility
 import com.marcobehler.chattermore.background.BackgroundNotificationMode
+import com.marcobehler.chattermore.background.NotificationTarget
 import com.marcobehler.chattermore.background.BackgroundPollingWorker
 import com.marcobehler.chattermore.data.AttachmentSelection
 import com.marcobehler.chattermore.data.IncomingShare
@@ -251,7 +252,6 @@ class MainActivity : ComponentActivity() {
     private var editFocusAnchor: EditFocusAnchor? = null
     private var anchoringEditSubmission = false
     private var pendingBackgroundSwitch: Switch? = null
-    private var pendingNotificationPostId: String? = null
     private val releaseEditFocusAnchor = Runnable { editFocusAnchor = null }
     private val refreshThreshold by lazy { 48f * resources.displayMetrics.density }
 
@@ -274,7 +274,8 @@ class MainActivity : ComponentActivity() {
         pendingScrollAnchor = savedInstanceState?.scrollAnchor()
         pendingImageRestore = savedInstanceState?.fullscreenImageRestore()
         pendingVideoRestore = savedInstanceState?.videoPlaybackRestore()
-        pendingNotificationPostId = intent.consumeNotificationPostId()
+        (savedInstanceState?.notificationTarget() ?: intent.consumeNotificationTarget())
+            ?.let(viewModel::openNotification)
         pendingCapture = savedInstanceState
             ?.getString(STATE_CAPTURE_URI)
             ?.let(Uri::parse)
@@ -292,15 +293,15 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        intent.consumeNotificationPostId()?.let {
-            pendingNotificationPostId = it
+        intent.consumeNotificationTarget()?.let { target ->
             val conversation = viewModel.screen.value as? ScreenState.Conversation
-            if (conversation?.canNavigateBack == true) {
-                viewModel.returnToOverview()
-            } else {
-                viewModel.refreshLatest()
+            if (conversation?.id != target.channelId) {
+                hideKeyboard()
+                normalDraftAfterEdit = null
+                messageInput.text.clear()
+                pendingScrollAnchor = null
             }
-            messageList.post(::scrollToPendingNotification)
+            viewModel.openNotification(target)
         }
         acceptIncomingShareIntent(intent)
     }
@@ -336,6 +337,7 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
+        viewModel.notificationTarget.value?.writeTo(outState)
         (captureScrollAnchor() ?: pendingScrollAnchor)?.let { anchor ->
             outState.putString(STATE_SCROLL_ITEM_KEY, anchor.itemKey)
             outState.putInt(STATE_SCROLL_POSITION, anchor.fallbackPosition)
@@ -983,6 +985,11 @@ class MainActivity : ComponentActivity() {
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
                 launch { viewModel.screen.collect(::renderScreen) }
+                launch {
+                    viewModel.notificationPostId.collect { postId ->
+                        if (postId != null) messageList.post(::scrollToPendingNotification)
+                    }
+                }
                 launch { viewModel.messageSearch.collect(::renderMessageSearch) }
                 launch { viewModel.mutations.collect(::applyMutation) }
                 launch { viewModel.conversationMutations.collect(conversationAdapter::apply) }
@@ -1601,23 +1608,42 @@ class MainActivity : ComponentActivity() {
             messageList.doOnPreDraw { correctEditFocusAfterLayout() }
         }
         completeMessageSearchJumpIfReady()
-        if (pendingNotificationPostId != null) {
+        if (viewModel.notificationPostId.value != null) {
             messageList.post(::scrollToPendingNotification)
         }
     }
 
     private fun scrollToPendingNotification() {
-        val postId = pendingNotificationPostId ?: return
+        val postId = viewModel.notificationPostId.value ?: return
         val position = adapter.positionOfServerId(postId)
         if (position == RecyclerView.NO_POSITION) return
         layoutManager.scrollToPositionWithOffset(position, messageList.height / 3)
-        pendingNotificationPostId = null
+        viewModel.notificationDisplayed(postId)
     }
 
-    private fun Intent.consumeNotificationPostId(): String? =
-        getStringExtra(BackgroundPollingWorker.EXTRA_NOTIFICATION_POST_ID)
-            ?.takeIf(String::isNotBlank)
-            ?.also { removeExtra(BackgroundPollingWorker.EXTRA_NOTIFICATION_POST_ID) }
+    private fun Intent.consumeNotificationTarget(): NotificationTarget? = extras?.notificationTarget()
+        ?.also {
+            removeExtra(BackgroundPollingWorker.EXTRA_NOTIFICATION_POST_ID)
+            removeExtra(BackgroundPollingWorker.EXTRA_NOTIFICATION_CHANNEL_ID)
+            removeExtra(BackgroundPollingWorker.EXTRA_NOTIFICATION_BASE_URL)
+            removeExtra(BackgroundPollingWorker.EXTRA_NOTIFICATION_USER_ID)
+        }
+
+    private fun Bundle.notificationTarget(): NotificationTarget? = runCatching {
+        NotificationTarget(
+            baseUrl = getString(BackgroundPollingWorker.EXTRA_NOTIFICATION_BASE_URL) ?: return null,
+            userId = getString(BackgroundPollingWorker.EXTRA_NOTIFICATION_USER_ID) ?: return null,
+            channelId = getString(BackgroundPollingWorker.EXTRA_NOTIFICATION_CHANNEL_ID) ?: return null,
+            postId = getString(BackgroundPollingWorker.EXTRA_NOTIFICATION_POST_ID) ?: return null,
+        )
+    }.getOrNull()
+
+    private fun NotificationTarget.writeTo(bundle: Bundle) {
+        bundle.putString(BackgroundPollingWorker.EXTRA_NOTIFICATION_BASE_URL, baseUrl)
+        bundle.putString(BackgroundPollingWorker.EXTRA_NOTIFICATION_USER_ID, userId)
+        bundle.putString(BackgroundPollingWorker.EXTRA_NOTIFICATION_CHANNEL_ID, channelId)
+        bundle.putString(BackgroundPollingWorker.EXTRA_NOTIFICATION_POST_ID, postId)
+    }
 
     private fun requestBottomRefresh() {
         val now = SystemClock.elapsedRealtime()

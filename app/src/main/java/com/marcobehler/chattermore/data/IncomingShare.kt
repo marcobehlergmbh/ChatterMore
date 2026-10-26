@@ -4,6 +4,8 @@ import android.content.Intent
 import android.net.Uri
 import androidx.core.content.IntentCompat
 import androidx.core.net.toUri
+import com.marcobehler.chattermore.BuildConfig
+import java.net.URI
 import java.util.UUID
 
 data class IncomingShare(
@@ -69,8 +71,7 @@ internal fun normalizeSharedUriStrings(candidates: Iterable<String?>): List<Stri
     val result = linkedSetOf<String>()
     candidates.forEach { candidate ->
         val value = candidate?.trim().orEmpty()
-        val scheme = value.substringBefore(':', missingDelimiterValue = "").lowercase()
-        if (value.isNotEmpty() && scheme in SUPPORTED_SHARED_URI_SCHEMES) result += value
+        if (isExternalAttachmentUri(value)) result += value
     }
     return result.toList()
 }
@@ -81,4 +82,9 @@ internal fun combineSharedDraftText(current: String, shared: String): String = w
     else -> "$current\n$shared"
 }
 
-private val SUPPORTED_SHARED_URI_SCHEMES = setOf("content", "file", "android.resource")
+internal fun isExternalAttachmentUri(value: String): Boolean = runCatching {
+    val uri = URI(value)
+    val authority = uri.authority?.substringAfterLast('@').orEmpty()
+    uri.scheme == "content" && authority.isNotBlank() &&
+        !authority.equals("${BuildConfig.APPLICATION_ID}.fileprovider", ignoreCase = true)
+}.getOrDefault(false)

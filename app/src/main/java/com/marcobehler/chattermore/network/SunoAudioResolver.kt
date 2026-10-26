@@ -2,23 +2,19 @@ package com.marcobehler.chattermore.network
 
 import com.marcobehler.chattermore.ui.SunoLinkParser
 import com.marcobehler.chattermore.ui.SunoSong
-import kotlinx.coroutines.suspendCancellableCoroutine
-import okhttp3.Call
-import okhttp3.Callback
+import kotlinx.coroutines.CancellationException
 import okhttp3.OkHttpClient
 import okhttp3.Request
-import okhttp3.Response
 import java.io.ByteArrayOutputStream
 import java.io.IOException
 import java.net.URI
-import kotlin.coroutines.resume
-import kotlin.coroutines.resumeWithException
 
 class SunoAudioResolver(
     private val client: OkHttpClient,
 ) {
     suspend fun resolve(song: SunoSong): ResolvedSunoAudio {
         val page = runCatching { fetchPage(song.pageUrl) }.getOrElse { error ->
+            if (error is CancellationException) throw error
             return song.songId?.let(::fallbackAudio) ?: throw error
         }
         val audioUrl = extractMetadata(page.html, "og:audio")
@@ -37,36 +33,17 @@ class SunoAudioResolver(
         }
     }
 
-    private suspend fun fetchPage(url: String): SunoPage = suspendCancellableCoroutine { continuation ->
-        val call = client.newCall(
-            Request.Builder()
-                .url(url)
-                .header("Accept", "text/html,application/xhtml+xml")
-                .header("User-Agent", USER_AGENT)
-                .build(),
-        )
-        continuation.invokeOnCancellation { call.cancel() }
-        call.enqueue(object : Callback {
-            override fun onFailure(call: Call, e: IOException) {
-                if (continuation.isActive) continuation.resumeWithException(e)
-            }
-
-            override fun onResponse(call: Call, response: Response) {
-                response.use {
-                    if (!continuation.isActive) return
-                    if (!response.isSuccessful) {
-                        continuation.resumeWithException(IOException("Suno returned HTTP ${response.code}"))
-                        return
-                    }
-                    val html = response.body.readBoundedText(MAX_PAGE_BYTES)
-                    if (html == null) {
-                        continuation.resumeWithException(IOException("Suno page was too large"))
-                    } else {
-                        continuation.resume(SunoPage(html, response.request.url.toString()))
-                    }
-                }
-            }
-        })
+    private suspend fun fetchPage(url: String): SunoPage = client.newCall(
+        Request.Builder()
+            .url(url)
+            .header("Accept", "text/html,application/xhtml+xml")
+            .header("User-Agent", USER_AGENT)
+            .build(),
+    ).readResponse { response ->
+        if (!response.isSuccessful) throw IOException("Suno returned HTTP ${response.code}")
+        val html = response.body.readBoundedText(MAX_PAGE_BYTES)
+            ?: throw IOException("Suno page was too large")
+        SunoPage(html, response.request.url.toString())
     }
 
     private fun fallbackAudio(songId: String, title: String? = null): ResolvedSunoAudio = ResolvedSunoAudio(

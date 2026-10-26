@@ -27,7 +27,7 @@ preparation.
 - Receives `posted`, `post_edited`, and `post_deleted` WebSocket events while foregrounded.
 - Inserts outgoing messages optimistically and reconciles REST/WebSocket acknowledgements with `pending_post_id`.
 - Keeps optimistic messages visually normal for 500 ms, then underlines them until confirmed.
-- Retries failed sends without losing the message text.
+- Retries failed sends without losing the message text, including after switching conversations within the same app session.
 - Uploads gallery media, camera captures, and files with progress before sending them with optional text.
 - Accepts Android single- and multi-file shares with a searchable picker for joined channels and existing DMs. Files upload only after choosing a destination and remain in the composer with any shared text until you tap Send.
 - Validates known attachment sizes against the Mattermost server limit before upload.
@@ -122,7 +122,7 @@ GOOGLE_PLAY_SERVICE_ACCOUNT_JSON=/secure/path/play-publisher.json \
 
 The password is encrypted with an AES-GCM key held by Android Keystore. It is exchanged for an in-memory Mattermost session token when the app connects. Android backup and cleartext network traffic are disabled. The server must present a certificate trusted by the Android system trust store.
 
-When credentials are cleared or an automatic reconnect fails, the last successfully connected host, team, and username remain available on the setup screen. The password is not included in that non-secret remembered record.
+When an automatic reconnect fails, saved credentials remain available for retry. Explicitly clearing the connection cancels any unfinished login and removes saved credentials; the last successfully connected host, team, and username remain available on the setup screen. The password is not included in that non-secret remembered record.
 
 ## Architecture
 
@@ -137,7 +137,7 @@ When credentials are cleared or an automatic reconnect fails, the last successfu
 
 REST and WebSocket races converge in `FeedStore` by server post ID and `pending_post_id`. Pending rows are never used as pagination cursors.
 
-Conversation switches retain one WebSocket and one bounded 2,000-row `FeedStore`. Five recent server pages are held in a 30-second LRU cache. A generation gate prevents delayed work from a previous channel or DM from mutating the newly active conversation.
+Conversation switches retain one WebSocket and one bounded 2,000-row feed. A separate in-memory outbox retains pending and failed sends for the account session, and clears when the connection is cleared or the process ends. Five recent server pages are held in a 30-second LRU cache. Generation gates isolate account changes and conversation switches from delayed responses.
 
 ## Performance Validation
 

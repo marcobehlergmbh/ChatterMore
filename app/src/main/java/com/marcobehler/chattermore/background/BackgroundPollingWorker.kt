@@ -21,6 +21,7 @@ import com.marcobehler.chattermore.model.MattermostPost
 import com.marcobehler.chattermore.model.MattermostUser
 import com.marcobehler.chattermore.network.MattermostApi
 import com.marcobehler.chattermore.security.SecureConfigStore
+import kotlinx.coroutines.CancellationException
 import java.io.IOException
 import java.util.concurrent.TimeUnit
 import okhttp3.OkHttpClient
@@ -57,7 +58,7 @@ class BackgroundPollingWorker(
                 when (error.statusCode) {
                     401 -> {
                         if (authenticatedThisRun) throw error
-                        session = authenticate() ?: return Result.retry()
+                        session = authenticate(session) ?: return Result.success()
                         postsAfterCheckpoint(session)
                     }
                     400, 404 -> {
@@ -117,16 +118,31 @@ class BackgroundPollingWorker(
         }
     }
 
-    private suspend fun authenticate(): BackgroundPollingSession? {
+    private suspend fun authenticate(
+        previous: BackgroundPollingSession? = null,
+    ): BackgroundPollingSession? {
         val loginConfig = store.load() ?: return null
         val (authenticatedConfig, user) = api.login(loginConfig)
-        val channel = api.resolveChannel(authenticatedConfig)
-        val refreshed = BackgroundPollingSession(
-            config = authenticatedConfig,
-            channelId = channel.id,
-            currentUserId = user.id,
-            currentUsername = user.username,
-        )
+        val refreshed = if (previous != null) {
+            previous.refreshed(authenticatedConfig, user) ?: return null
+        } else {
+            val team = api.resolveTeam(authenticatedConfig)
+            val channelId = store.loadRememberedConversation()?.channelIdFor(
+                authenticatedConfig.baseUrl, team.id, user.id,
+            ) ?: return null
+            val channel = api.channel(authenticatedConfig, channelId)
+            BackgroundPollingSession(
+                config = authenticatedConfig.copy(teamName = team.name, channelName = channel.displayName.ifBlank { channel.name }),
+                channelId = channelId,
+                currentUserId = user.id,
+                currentUsername = user.username,
+            )
+        }
+        if (!store.backgroundPollingSettings().enabled || store.load() != loginConfig ||
+            store.loadBackgroundPollingSession() != previous
+        ) {
+            throw CancellationException("Background connection changed")
+        }
         store.saveBackgroundPollingSession(refreshed)
         return store.loadBackgroundPollingSession() ?: refreshed
     }
@@ -204,6 +220,9 @@ class BackgroundPollingWorker(
         val latestPost = visiblePosts.last()
         val tapIntent = Intent(applicationContext, MainActivity::class.java)
             .putExtra(EXTRA_NOTIFICATION_POST_ID, latestPost.id)
+            .putExtra(EXTRA_NOTIFICATION_CHANNEL_ID, session.channelId)
+            .putExtra(EXTRA_NOTIFICATION_BASE_URL, session.config.baseUrl)
+            .putExtra(EXTRA_NOTIFICATION_USER_ID, session.currentUserId)
             .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
         val pendingIntent = PendingIntent.getActivity(
             applicationContext,
@@ -271,6 +290,9 @@ class BackgroundPollingWorker(
 
     companion object {
         const val EXTRA_NOTIFICATION_POST_ID = "notification_post_id"
+        const val EXTRA_NOTIFICATION_CHANNEL_ID = "notification_channel_id"
+        const val EXTRA_NOTIFICATION_BASE_URL = "notification_base_url"
+        const val EXTRA_NOTIFICATION_USER_ID = "notification_user_id"
         const val CHANNEL_ID = "background_messages"
         private const val PAGE_SIZE = 200
         private const val MAX_PAGES_PER_RUN = 3

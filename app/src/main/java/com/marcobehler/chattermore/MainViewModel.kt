@@ -3,6 +3,7 @@ package com.marcobehler.chattermore
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
+import com.marcobehler.chattermore.background.NotificationTarget
 import com.marcobehler.chattermore.background.BackgroundNotificationMode
 import com.marcobehler.chattermore.background.BackgroundPollingScheduler
 import com.marcobehler.chattermore.background.BackgroundPollingSession
@@ -123,6 +124,11 @@ class MainViewModel(
         unsupportedMessage = unsupportedMessage,
     )
     private val _screen = MutableStateFlow<ScreenState>(ScreenState.Loading)
+    private val _notificationTarget = MutableStateFlow<NotificationTarget?>(null)
+    private val _notificationPostId = MutableStateFlow<String?>(null)
+    private var openingNotification: NotificationTarget? = null
+    val notificationTarget = _notificationTarget.asStateFlow()
+    val notificationPostId = _notificationPostId.asStateFlow()
     private val _messageEdit = MutableStateFlow<MessageEditState?>(null)
     private val _composer = MutableStateFlow(ComposerState())
     private val _incomingShares = MutableStateFlow<List<IncomingShare>>(emptyList())
@@ -156,6 +162,8 @@ class MainViewModel(
     private var authenticatedTeam: MattermostTeam? = null
     private var loadingOlder = false
     private var loadingNewer = false
+    private var connectionGeneration = 0
+    private var connectionJob: Job? = null
     private var conversationRequestGeneration = 0
     private var backgroundSettingsGeneration = 0
     private var lastReadyConversationScreen: ScreenState.Conversation? = null
@@ -257,6 +265,8 @@ class MainViewModel(
 
     fun connect(config: ServerConfig, persist: Boolean = true) {
         if ((_screen.value as? ScreenState.Setup)?.connecting == true) return
+        val connectionAttempt = ++connectionGeneration
+        connectionJob?.cancel()
         closeMessageSearch()
         messageSearchCache.clear()
         searchUsersById.clear()
@@ -276,10 +286,11 @@ class MainViewModel(
         clearAttachments()
         _messageEdit.value = null
         _screen.value = ScreenState.Setup(config = config, connecting = true)
-        viewModelScope.launch {
+        connectionJob = viewModelScope.launch {
             runCatching {
                 val normalized = container.api.normalizedConfig(config)
                 repository.initialize(normalized) { directory ->
+                    if (connectionAttempt != connectionGeneration) return@initialize
                     showInitializedDirectory(
                         directory = directory,
                         selectInitialScreen =
@@ -289,6 +300,7 @@ class MainViewModel(
                 }
             }
                 .onSuccess { directory ->
+                    if (connectionAttempt != connectionGeneration) return@onSuccess
                     val normalized = container.api.normalizedConfig(config).copy(
                         teamName = directory.config.teamName,
                     )
@@ -298,6 +310,7 @@ class MainViewModel(
                             initializationGeneration == conversationRequestGeneration,
                         restoreRememberedConversation = true,
                     )
+                    if (_notificationTarget.value != null && openingNotification == null) failNotification()
                     if (persist) {
                         container.configStore.save(normalized)
                     } else {
@@ -305,6 +318,8 @@ class MainViewModel(
                     }
                 }
                 .onFailure { error ->
+                    if (error is CancellationException) throw error
+                    if (connectionAttempt != connectionGeneration) return@onFailure
                     currentUserId = null
                     authenticatedConfig = null
                     configuredChannel = null
@@ -330,6 +345,11 @@ class MainViewModel(
     }
 
     fun clearConnection() {
+        clearNotification()
+        connectionGeneration++
+        connectionJob?.cancel()
+        connectionJob = null
+        closeMessageSearch()
         backgroundSettingsGeneration++
         clearAttachments()
         repository.close()
@@ -412,10 +432,56 @@ class MainViewModel(
         _screen.value = screen
     }
 
-    fun openConversation(summary: ConversationSummary) {
+    fun openNotification(target: NotificationTarget) {
+        if (_notificationTarget.value == target) return
+        _notificationTarget.value = target
+        _notificationPostId.value = null
+        openingNotification = null
+        if (!tryOpenNotification() && authenticatedConfig != null && connectionJob?.isActive != true) {
+            failNotification()
+        }
+    }
+
+    fun notificationDisplayed(postId: String) {
+        if (_notificationPostId.value == postId) clearNotification()
+    }
+
+    private fun clearNotification() {
+        _notificationTarget.value = null
+        _notificationPostId.value = null
+        openingNotification = null
+    }
+
+    private fun failNotification() {
+        clearNotification()
+        _composerMessages.tryEmit("That notification's conversation or message is no longer available for this account.")
+    }
+
+    private fun tryOpenNotification(): Boolean {
+        val target = _notificationTarget.value ?: return false
+        if (openingNotification == target) return true
+        val config = authenticatedConfig ?: return false
+        val userId = currentUserId ?: return false
+        if (!target.matches(config, userId)) {
+            failNotification()
+            return false
+        }
+        val summary = overviewConversations.firstOrNull { it.id == target.channelId } ?: return false
+        openingNotification = target
+        openConversation(summary, target)
+        return true
+    }
+
+    fun openConversation(summary: ConversationSummary) = openConversation(summary, null)
+
+    private fun openConversation(summary: ConversationSummary, notification: NotificationTarget?) {
         if (BuildConfig.BENCHMARK_FIXTURES || summary.id.isBlank()) return
         val requestGeneration = ++conversationRequestGeneration
-        clearConversationBoundComposerState()
+        if (notification != null && _screen.value.readyConversation()?.id == summary.id) {
+            closeMessageSearch()
+        } else {
+            clearConversationBoundComposerState(preserveNotification = notification != null)
+        }
         _screen.value = ScreenState.Conversation(
             id = "loading:${summary.id}:$requestGeneration",
             title = summary.title,
@@ -429,6 +495,7 @@ class MainViewModel(
                     if (requestGeneration != conversationRequestGeneration) return@onSuccess
                     if (conversation == null) {
                         overviewScreen?.let { _screen.value = it }
+                        if (notification != null) failNotification()
                         return@onSuccess
                     }
                     configuredChannel = conversation.channel
@@ -444,10 +511,23 @@ class MainViewModel(
                     rememberSelectedConversation(conversation.channelId)
                     _screen.value = screen
                     synchronizeSelectedBackgroundSession()
+                    if (notification != null) {
+                        try {
+                            val loaded = repository.snapshot().any { it.serverId == notification.postId } ||
+                                repository.loadMessageContext(notification.channelId, notification.postId)
+                            if (requestGeneration != conversationRequestGeneration) return@onSuccess
+                            if (loaded) _notificationPostId.value = notification.postId else failNotification()
+                        } catch (error: CancellationException) {
+                            throw error
+                        } catch (_: Exception) {
+                            if (requestGeneration == conversationRequestGeneration) failNotification()
+                        }
+                    }
                 }
                 .onFailure { error ->
                     if (error is CancellationException) throw error
                     if (requestGeneration != conversationRequestGeneration) return@onFailure
+                    if (notification != null) failNotification()
                     overviewScreen?.let { _screen.value = it }
                     _composerMessages.emit(
                         error.message ?: "The conversation could not be opened.",
@@ -1054,7 +1134,8 @@ class MainViewModel(
         _composer.update { it.copy(attachments = emptyList(), resolvingCount = 0) }
     }
 
-    private fun clearConversationBoundComposerState() {
+    private fun clearConversationBoundComposerState(preserveNotification: Boolean = false) {
+        if (!preserveNotification) clearNotification()
         closeMessageSearch()
         clearAttachments()
         _messageEdit.value = null
@@ -1080,6 +1161,11 @@ class MainViewModel(
             conversations = overviewConversations,
         )
         overviewScreen = overview
+        if (tryOpenNotification()) return
+        if (_notificationTarget.value != null) {
+            if (selectInitialScreen) _screen.value = overview
+            return
+        }
         if (!selectInitialScreen) return
         val remembered = if (restoreRememberedConversation) {
             val rememberedChannelId = container.configStore.loadRememberedConversation()
@@ -1127,13 +1213,18 @@ class MainViewModel(
         channel: MattermostChannel,
         user: MattermostUser,
     ) {
+        val settingsGeneration = backgroundSettingsGeneration
+        val accountGeneration = connectionGeneration
         val newest = repository.snapshot()
             .asSequence()
             .filter { it.channelId == channel.id && it.serverId != null }
             .maxWithOrNull(compareBy(FeedItem::createAt, FeedItem::serverId))
+        if (settingsGeneration != backgroundSettingsGeneration || accountGeneration != connectionGeneration ||
+            authenticatedConfig != config || configuredChannel?.id != channel.id
+        ) return
         container.configStore.saveBackgroundPollingSession(
             BackgroundPollingSession(
-                config = config,
+                config = config.copy(channelName = channel.displayName.ifBlank { channel.name }),
                 channelId = channel.id,
                 currentUserId = user.id,
                 currentUsername = user.username,

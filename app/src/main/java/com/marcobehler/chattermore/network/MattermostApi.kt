@@ -16,10 +16,7 @@ import com.marcobehler.chattermore.model.ServerConfig
 import com.marcobehler.chattermore.model.TeamNotFoundException
 import com.marcobehler.chattermore.model.UploadCapabilities
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
-import okhttp3.Call
-import okhttp3.Callback
 import okhttp3.HttpUrl
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.MultipartBody
@@ -27,11 +24,7 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
-import okhttp3.Response
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
-import java.io.IOException
-import kotlin.coroutines.resume
-import kotlin.coroutines.resumeWithException
 
 class MattermostApi(
     private val client: OkHttpClient,
@@ -140,6 +133,9 @@ class MattermostApi(
             ),
         ),
     )
+
+    suspend fun channel(config: AuthenticatedServerConfig, channelId: String): MattermostChannel =
+        parseChannel(execute(request(config, apiUrl(config, "channels", channelId))))
 
     suspend fun channelMemberships(
         config: AuthenticatedServerConfig,
@@ -410,31 +406,15 @@ class MattermostApi(
     private suspend fun executeResponse(
         request: Request,
         callClient: OkHttpClient = client,
-    ): ApiResponse = suspendCancellableCoroutine { continuation ->
-        val call = callClient.newCall(request)
-        continuation.invokeOnCancellation { call.cancel() }
-        call.enqueue(object : Callback {
-            override fun onFailure(call: Call, e: IOException) {
-                if (continuation.isActive) continuation.resumeWithException(e)
-            }
-
-            override fun onResponse(call: Call, response: Response) {
-                response.use {
-                    val body = response.body.string()
-                    if (!continuation.isActive) return
-                    if (response.isSuccessful) {
-                        continuation.resume(ApiResponse(body, response.header("Token")))
-                    } else {
-                        continuation.resumeWithException(
-                            MattermostException(
-                                response.code,
-                                errorMessage(body).ifBlank { "Mattermost returned HTTP ${response.code}" },
-                            ),
-                        )
-                    }
-                }
-            }
-        })
+    ): ApiResponse = callClient.newCall(request).readResponse { response ->
+        val body = response.body.string()
+        if (!response.isSuccessful) {
+            throw MattermostException(
+                response.code,
+                errorMessage(body).ifBlank { "Mattermost returned HTTP ${response.code}" },
+            )
+        }
+        ApiResponse(body, response.header("Token"))
     }
 
     private companion object {

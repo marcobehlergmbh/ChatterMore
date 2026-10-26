@@ -15,6 +15,20 @@ class FeedStore(
 ) {
     private val items = mutableListOf<FeedItem>()
     private val users = mutableMapOf<String, MattermostUser>()
+    // The outbox belongs to the account session, not the currently visible page.
+    private val outbox = mutableMapOf<String, FeedItem>()
+    // Post IDs cannot be reused after deletion. Keep these across page/channel switches
+    // for the session so even a very delayed response cannot resurrect a deleted post.
+    private val deletedPostIds = mutableSetOf<String>()
+    private var activeChannelId: String? = null
+
+    fun clear() {
+        items.clear()
+        users.clear()
+        outbox.clear()
+        deletedPostIds.clear()
+        activeChannelId = null
+    }
 
     init {
         require(maxItems > 0) { "maxItems must be positive" }
@@ -27,19 +41,41 @@ class FeedStore(
     fun replace(
         posts: Collection<MattermostPost>,
         profiles: Collection<MattermostUser>,
+        channelId: String? = posts.firstOrNull()?.channelId ?: activeChannelId,
     ): FeedMutation.Replace {
         users.putAll(profiles.associateBy(MattermostUser::id))
+        val previous = items.mapNotNull { item -> item.serverId?.let { it to item } }.toMap()
+        activeChannelId = channelId
         items.clear()
-        posts.asSequence()
-            .filter(::isVisible)
+        val channelPosts = posts.filter { it.channelId == channelId }
+        channelPosts.filter { it.deleteAt != 0L }.forEach { deletedPostIds += it.id }
+        channelPosts.asSequence()
+            .filter { isVisible(it) && it.id !in deletedPostIds }
+            .sortedByDescending(MattermostPost::updateAt)
             .distinctBy(MattermostPost::id)
-            .map(::toFeedItem)
-            .sortedWith(FEED_ORDER)
-            .toList()
-            .takeLast(maxItems)
+            .map { post ->
+                val pending = matchingPending(post)
+                val old = previous[post.id] ?: pending
+                pending?.pendingId?.let(outbox::remove)
+                if (old?.serverId != null && old.updateAt > post.updateAt) old else toFeedItem(post, old)
+            }
             .toCollection(items)
+        items += outbox.values.filter { it.channelId == channelId }
+        items.sortWith(FEED_ORDER)
+        trimToMax(retainNewest = true)
         return FeedMutation.Replace(snapshot())
     }
+
+    /** Complete sends even if their conversation is no longer on screen. */
+    fun acknowledge(post: MattermostPost, profiles: Collection<MattermostUser>): List<FeedMutation> {
+        if (post.deleteAt != 0L) deletedPostIds += post.id
+        if (post.channelId == activeChannelId) return merge(listOf(post), profiles)
+        matchingPending(post)?.pendingId?.let(outbox::remove)
+        return emptyList()
+    }
+
+    private fun matchingPending(post: MattermostPost): FeedItem? = outbox[post.pendingPostId]
+        ?.takeIf { it.channelId == post.channelId && it.userId == post.userId }
 
     fun merge(
         posts: Collection<MattermostPost>,
@@ -90,15 +126,25 @@ class FeedStore(
         users.putAll(profiles.associateBy(MattermostUser::id))
         val mutations = mutableListOf<FeedMutation>()
         posts.sortedWith(POST_ORDER).forEach { post ->
-            val serverIndex = items.indexOfFirst { it.serverId == post.id }
-            val pendingIndex = if (post.pendingPostId.isNotBlank()) {
-                items.indexOfFirst { it.pendingId == post.pendingPostId }
-            } else {
-                -1
+            val pending = matchingPending(post)
+            pending?.pendingId?.let(outbox::remove)
+            var serverIndex = items.indexOfFirst { it.serverId == post.id }
+            val pendingIndex = items.indexOfFirst {
+                it.pendingId == post.pendingPostId && it.userId == post.userId &&
+                    it.channelId == post.channelId && it.serverId == null
+            }
+            if (serverIndex >= 0 && pendingIndex >= 0 && serverIndex != pendingIndex) {
+                mutations += FeedMutation.Remove(items.removeAt(pendingIndex).key)
+                serverIndex = items.indexOfFirst { it.serverId == post.id }
             }
             val existingIndex = if (serverIndex >= 0) serverIndex else pendingIndex
+            val previous = items.getOrNull(existingIndex)
+            if (post.deleteAt != 0L) deletedPostIds += post.id
+            if (post.id !in deletedPostIds && previous?.serverId != null && previous.updateAt > post.updateAt) {
+                return@forEach
+            }
 
-            if (!isVisible(post)) {
+            if (!isVisible(post) || post.id in deletedPostIds) {
                 if (existingIndex >= 0) {
                     val removed = items.removeAt(existingIndex)
                     mutations += FeedMutation.Remove(removed.key)
@@ -106,12 +152,24 @@ class FeedStore(
                 return@forEach
             }
 
-            val item = toFeedItem(post, existingIndex.takeIf { it >= 0 }?.let(items::get))
+            val item = toFeedItem(post, previous ?: pending)
             if (existingIndex >= 0) {
                 val previous = items[existingIndex]
                 if (previous != item) {
-                    items[existingIndex] = item
-                    mutations += FeedMutation.Update(previous.key, item)
+                    val before = items.getOrNull(existingIndex - 1)
+                    val after = items.getOrNull(existingIndex + 1)
+                    if ((before == null || FEED_ORDER.compare(before, item) <= 0) &&
+                        (after == null || FEED_ORDER.compare(item, after) <= 0)
+                    ) {
+                        items[existingIndex] = item
+                        mutations += FeedMutation.Update(previous.key, item)
+                    } else {
+                        items.removeAt(existingIndex)
+                        mutations += FeedMutation.Remove(previous.key)
+                        val target = items.binarySearch(item, FEED_ORDER).let { if (it >= 0) it else -it - 1 }
+                        items.add(target, item)
+                        mutations += FeedMutation.Insert(target, item)
+                    }
                 }
             } else {
                 val insertionIndex = items.binarySearch(item, FEED_ORDER).let { result ->
@@ -141,6 +199,7 @@ class FeedStore(
         uploadedFiles: List<MattermostFile> = emptyList(),
     ): FeedMutation {
         users[user.id] = user
+        activeChannelId = channelId
         val item = FeedItem(
             key = pendingKey(pendingId),
             serverId = null,
@@ -156,6 +215,7 @@ class FeedStore(
             images = imagesFrom(uploadedFiles),
             files = filesFrom(uploadedFiles),
         )
+        outbox[pendingId] = item
         val index = items.binarySearch(item, FEED_ORDER).let { if (it >= 0) it else -it - 1 }
         items.add(index, item)
         if (items.size > maxItems) {
@@ -166,11 +226,12 @@ class FeedStore(
     }
 
     fun setPendingState(pendingId: String, state: DeliveryState): FeedMutation.Update? {
-        val index = items.indexOfFirst { it.pendingId == pendingId }
-        if (index < 0) return null
-        val previous = items[index]
-        if (previous.serverId != null || previous.deliveryState == state) return null
+        val previous = outbox[pendingId] ?: return null
+        if (previous.deliveryState == state) return null
         val updated = previous.copy(deliveryState = state)
+        outbox[pendingId] = updated
+        val index = items.indexOfFirst { it.pendingId == pendingId && it.serverId == null }
+        if (index < 0) return null
         items[index] = updated
         return FeedMutation.Update(previous.key, updated)
     }
@@ -181,7 +242,7 @@ class FeedStore(
         return setPendingState(pendingId, DeliveryState.UNCONFIRMED)
     }
 
-    fun pending(pendingId: String): FeedItem? = items.firstOrNull { it.pendingId == pendingId }
+    fun pending(pendingId: String): FeedItem? = outbox[pendingId] ?: items.firstOrNull { it.pendingId == pendingId }
 
     fun post(serverId: String): FeedItem? = items.firstOrNull { it.serverId == serverId }
 

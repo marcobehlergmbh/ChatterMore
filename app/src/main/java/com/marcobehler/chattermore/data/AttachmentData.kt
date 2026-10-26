@@ -1,6 +1,6 @@
 package com.marcobehler.chattermore.data
 
-import android.content.ContentResolver
+import android.content.Context
 import android.content.Intent
 import android.database.Cursor
 import android.net.Uri
@@ -50,9 +50,12 @@ data class DraftAttachment(
 )
 
 class AttachmentDataSource(
-    private val resolver: ContentResolver,
+    private val context: Context,
 ) {
+    private val resolver = context.contentResolver
+
     suspend fun inspect(selection: AttachmentSelection): LocalAttachment = withContext(Dispatchers.IO) {
+        validateSource(selection.uri, selection.temporary)
         persistReadAccess(selection.uri)
         val metadata = queryMetadata(selection.uri)
         val name = sanitizeFileName(
@@ -86,6 +89,7 @@ class AttachmentDataSource(
         override fun contentLength(): Long = source.sizeBytes ?: -1L
 
         override fun writeTo(sink: BufferedSink) {
+            validateSource(source.uri, source.temporary)
             val input = resolver.openInputStream(source.uri)
                 ?: throw FileNotFoundException("The selected file is no longer available.")
             input.use {
@@ -120,6 +124,23 @@ class AttachmentDataSource(
         runCatching {
             resolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
+    }
+
+    private fun validateSource(uri: Uri, temporary: Boolean) {
+        require(uri.scheme == "content") { "Select a file from a content provider." }
+        val authority = uri.authority?.substringAfterLast('@')
+            ?: throw IllegalArgumentException("The selected file has no provider.")
+        val provider = context.packageManager.resolveContentProvider(authority, 0)
+            ?: throw IllegalArgumentException("The selected file provider is unavailable.")
+        val owned = provider.applicationInfo.uid == context.applicationInfo.uid
+        require(
+            if (temporary) {
+                owned && authority == "${context.packageName}.fileprovider"
+            } else {
+                !owned && isExternalAttachmentUri(uri.toString())
+            },
+        ) { "Another app cannot share ChatterMore's private files." }
+        // ContentResolver enforces the external provider's read permission/URI grant on open.
     }
 
     private fun queryMetadata(uri: Uri): Pair<String?, Long?> {

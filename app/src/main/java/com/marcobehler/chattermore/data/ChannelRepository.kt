@@ -25,6 +25,7 @@ import com.marcobehler.chattermore.network.MattermostSocket
 import com.marcobehler.chattermore.ui.MessageLinkParser
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
@@ -54,7 +55,7 @@ class ChannelRepository(
     private val api: MattermostApi,
     private val socket: MattermostSocket,
     private val scope: CoroutineScope,
-    private val conversationCache: ConversationSummaryCache,
+    private val conversationCache: ConversationCache,
     unsupportedMessage: String,
 ) {
     private val feed = FeedStore(unsupportedMessage)
@@ -107,6 +108,7 @@ class ChannelRepository(
     private var activeReadAckJob: Job? = null
     private val conversationGeneration = AtomicInteger()
     private val postArrivedDuringConversationSwitch = AtomicBoolean()
+    private var sessionGeneration = 0
     private var initialized = false
     private var foreground = false
     private var olderExhausted = false
@@ -131,6 +133,7 @@ class ChannelRepository(
         rawConfig: ServerConfig,
         onCachedDirectory: (InitializedDirectory) -> Unit = {},
     ): InitializedDirectory {
+        val session = ++sessionGeneration
         stopSocket()
         initialized = false
         conversationGeneration.incrementAndGet()
@@ -152,9 +155,14 @@ class ChannelRepository(
         channelUsersGeneration++
         _uploadCapabilities.value = UploadCapabilities()
         clearMentionContext()
+        feedMutex.withLock { feed.clear() }
+        synchronized(recentConversationPages) { recentConversationPages.clear() }
         val (authenticatedConfig, authenticatedUser) = api.login(rawConfig)
+        checkSession(session)
+        val team = api.resolveTeam(authenticatedConfig)
+        checkSession(session)
         currentUser = authenticatedUser
-        currentTeam = api.resolveTeam(authenticatedConfig)
+        currentTeam = team
         config = authenticatedConfig.copy(teamName = currentTeam.name)
         resetMentionContext(authenticatedUser)
         _channelUsers.value = listOf(authenticatedUser)
@@ -166,6 +174,7 @@ class ChannelRepository(
         val cached = directoryCacheKey
             ?.let { conversationCache.load(it) }
             .orEmpty()
+        checkSession(session)
         if (cached.isNotEmpty()) {
             replaceDirectory(cached, emit = false)
         }
@@ -177,6 +186,7 @@ class ChannelRepository(
                 InitializedDirectory(currentTeam, currentUser, config, cached),
             )
         }
+        checkSession(session)
 
         val directory = runCatching {
             coroutineScope {
@@ -205,8 +215,10 @@ class ChannelRepository(
                 }
                 val peerIds = directMessagePeerIds(channels, currentUser.id)
                 val peers = if (peerIds.isEmpty()) emptyList() else api.users(config, peerIds)
+                val capabilities = capabilitiesRequest.await()
+                checkSession(session)
                 addMentionUsers(peers)
-                _uploadCapabilities.value = capabilitiesRequest.await()
+                _uploadCapabilities.value = capabilities
                 buildConversationDirectory(
                     channels = channels,
                     memberships = membershipsRequest.await(),
@@ -215,11 +227,14 @@ class ChannelRepository(
                 )
             }
         }.getOrElse { error ->
+            if (error is CancellationException) throw error
+            checkSession(session)
             if (cached.isNotEmpty()) {
                 return InitializedDirectory(currentTeam, currentUser, config, cached)
             }
             throw error
         }
+        checkSession(session)
         replaceDirectory(directory, emit = cached.isNotEmpty())
         return InitializedDirectory(currentTeam, currentUser, config, directory)
     }
@@ -455,7 +470,7 @@ class ChannelRepository(
             if (!isActiveLocked(token)) return@withLock null
             olderExhausted = false
             activeConversationAtLatest = false
-            feed.replace(posts, profiles + currentUser).also {
+            feed.replace(posts, profiles + currentUser, channelId).also {
                 resetPageWindowLocked(
                     posts = posts,
                     atLatest = newerPage.orderedPosts.size < MESSAGE_CONTEXT_SIDE_SIZE,
@@ -576,7 +591,7 @@ class ChannelRepository(
     ): MattermostFile {
         val token = activeToken() ?: throw CancellationException("No active conversation")
         return api.uploadFile(
-            config,
+            token.config,
             token.conversation.channelId,
             fileName,
             clientId,
@@ -636,7 +651,10 @@ class ChannelRepository(
         val token = activeToken() ?: return
         val pending = feedMutex.withLock {
             if (!isActiveLocked(token)) return
-            val item = feed.pending(pendingId) ?: return
+            val item = feed.pending(pendingId)?.takeIf {
+                it.channelId == token.conversation.channelId &&
+                    it.userId == token.user.id && it.deliveryState == DeliveryState.FAILED
+            } ?: return
             val mutation = feed.setPendingState(pendingId, DeliveryState.OPTIMISTIC) ?: return
             Triple(mutation, item.message, item.fileIds)
         }
@@ -646,6 +664,7 @@ class ChannelRepository(
     }
 
     fun close() {
+        val closedSession = ++sessionGeneration
         stopSocket()
         directoryCacheJob?.cancel()
         directoryCacheJob = null
@@ -670,7 +689,10 @@ class ChannelRepository(
         directoryOrder = emptyList()
         directoryCacheKey = null
         synchronized(recentConversationPages) { recentConversationPages.clear() }
-        scope.launch { clearMentionContext() }
+        scope.launch(start = CoroutineStart.UNDISPATCHED) {
+            feedMutex.withLock { if (closedSession == sessionGeneration) feed.clear() }
+            clearMentionContext(closedSession)
+        }
     }
 
     private suspend fun submitPending(
@@ -680,15 +702,15 @@ class ChannelRepository(
         fileIds: List<String>,
     ): Boolean = try {
         val post = api.createPost(
-            config,
+            token.config,
             token.conversation.channelId,
             message,
             pendingId,
             fileIds,
         )
         val mutations = feedMutex.withLock {
-            if (!isActiveLocked(token)) return@withLock null
-            feed.merge(listOf(post), listOf(currentUser))
+            if (token.session != sessionGeneration) return@withLock null
+            feed.acknowledge(post, listOf(token.user))
         }
         if (mutations != null) {
             invalidateRecentPage(token.conversation.channelId)
@@ -697,8 +719,9 @@ class ChannelRepository(
         }
         true
     } catch (error: Exception) {
+        if (error is CancellationException) throw error
         feedMutex.withLock {
-            if (!isActiveLocked(token)) return@withLock null
+            if (token.session != sessionGeneration) return@withLock null
             feed.setPendingState(pendingId, DeliveryState.FAILED)
         }
             ?.let { _mutations.emit(it) }
@@ -709,7 +732,7 @@ class ChannelRepository(
         scope.launch {
             delay(UNCONFIRMED_GRACE_MS)
             feedMutex.withLock {
-                if (!isActiveLocked(token)) return@withLock null
+                if (token.session != sessionGeneration) return@withLock null
                 feed.markUnconfirmed(pendingId)
             }
                 ?.let { _mutations.emit(it) }
@@ -753,7 +776,7 @@ class ChannelRepository(
                 conversationSelected = true
                 conversationSwitching = false
                 activeConversationAtLatest = true
-                val mutation = feed.replace(posts, profiles + currentUser).copy(
+                val mutation = feed.replace(posts, profiles + currentUser, target.channelId).copy(
                     conversationId = target.channelId,
                 )
                 resetPageWindowLocked(posts, atLatest = true)
@@ -840,7 +863,7 @@ class ChannelRepository(
         ) {
             null
         } else {
-            ActiveToken(activeConversation, activeConversationGeneration)
+            ActiveToken(activeConversation, activeConversationGeneration, sessionGeneration, config, currentUser)
         }
     }
 
@@ -856,15 +879,19 @@ class ChannelRepository(
             }
             null
         } else {
-            ActiveToken(activeConversation, activeConversationGeneration)
+            ActiveToken(activeConversation, activeConversationGeneration, sessionGeneration, config, currentUser)
         }
     }
 
     private suspend fun isActive(token: ActiveToken): Boolean =
         feedMutex.withLock { isActiveLocked(token) }
 
+    private fun checkSession(session: Int) {
+        if (session != sessionGeneration) throw CancellationException("Connection changed")
+    }
+
     private fun isActiveLocked(token: ActiveToken): Boolean =
-        initialized &&
+        initialized && token.session == sessionGeneration &&
             ::activeConversation.isInitialized &&
             token.generation == conversationGeneration.get() &&
             token.generation == activeConversationGeneration &&
@@ -938,6 +965,11 @@ class ChannelRepository(
             signal.channelId == token.conversation.channelId &&
             signal.post.channelId == token.conversation.channelId
         if (!matchesActiveConversation) {
+            val mutations = feedMutex.withLock { feed.acknowledge(signal.post, emptyList()) }
+            // While a switch is pending, the old feed may become visible again if
+            // opening the destination fails. Keep its adapter in sync as well.
+            if (conversationSelected) emitAll(mutations)
+            invalidateRecentPage(signal.channelId)
             val updated = updateInactiveConversation(signal)
             if (!updated || cursorUpdate.sequenceGap) scope.launch { refreshDirectorySafely() }
             return
@@ -1128,26 +1160,31 @@ class ChannelRepository(
 
     private suspend fun refreshDirectorySafely() {
         if (!initialized) return
+        val session = sessionGeneration
+        val requestConfig = config
+        val requestUser = currentUser
+        val requestTeam = currentTeam
         runCatching {
             coroutineScope {
                 val channelsRequest = async {
-                    api.channelsForUser(config, currentUser.id, currentTeam.id)
+                    api.channelsForUser(requestConfig, requestUser.id, requestTeam.id)
                 }
                 val membershipsRequest = async {
-                    api.channelMemberships(config, currentUser.id, currentTeam.id)
+                    api.channelMemberships(requestConfig, requestUser.id, requestTeam.id)
                 }
                 val channels = channelsRequest.await()
-                val peerIds = directMessagePeerIds(channels, currentUser.id)
-                val peers = if (peerIds.isEmpty()) emptyList() else api.users(config, peerIds)
+                val peerIds = directMessagePeerIds(channels, requestUser.id)
+                val peers = if (peerIds.isEmpty()) emptyList() else api.users(requestConfig, peerIds)
+                checkSession(session)
                 addMentionUsers(peers)
                 buildConversationDirectory(
                     channels,
                     membershipsRequest.await(),
-                    currentUser.id,
+                    requestUser.id,
                     peers,
                 )
             }
-        }.onSuccess { replaceDirectory(it, emit = true) }
+        }.onSuccess { if (session == sessionGeneration) replaceDirectory(it, emit = true) }
     }
 
     private fun scheduleDirectoryCacheWrite() {
@@ -1442,8 +1479,9 @@ class ChannelRepository(
         }
     }
 
-    private suspend fun clearMentionContext() {
+    private suspend fun clearMentionContext(session: Int? = null) {
         mentionMutex.withLock {
+            if (session != null && session != sessionGeneration) return
             mentionGeneration++
             mentionUsersByUsername.clear()
             knownUsersById.clear()
@@ -1531,6 +1569,9 @@ class ChannelRepository(
     private data class ActiveToken(
         val conversation: Conversation,
         val generation: Int,
+        val session: Int,
+        val config: AuthenticatedServerConfig,
+        val user: MattermostUser,
     )
 
     private data class CachedConversationPage(

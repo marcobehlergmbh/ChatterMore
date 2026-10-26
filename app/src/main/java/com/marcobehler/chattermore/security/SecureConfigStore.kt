@@ -249,7 +249,6 @@ class SecureConfigStore(context: Context) {
     private fun BackgroundPollingSession.sameIdentityAs(other: BackgroundPollingSession): Boolean =
         config.baseUrl == other.config.baseUrl &&
             config.teamName == other.config.teamName &&
-            config.channelName == other.config.channelName &&
             channelId == other.channelId &&
             currentUserId == other.currentUserId
 

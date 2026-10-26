@@ -337,12 +337,16 @@ class MattermostImageLoader(
         override fun onFailure(call: Call, e: IOException) = complete(key, null)
 
         override fun onResponse(call: Call, response: Response) {
-            val bytes = response.use {
-                if (!response.isSuccessful || response.request.url.scheme != "https") return@use null
-                if (requireImageContentType && response.body.contentType()?.type != "image") {
-                    return@use null
+            val bytes = try {
+                response.use {
+                    if (!response.isSuccessful || response.request.url.scheme != "https") return@use null
+                    if (requireImageContentType && response.body.contentType()?.type != "image") {
+                        return@use null
+                    }
+                    response.body.readBoundedBytes(maxEncodedBytes)
                 }
-                response.body.readBoundedBytes(maxEncodedBytes)
+            } catch (_: IOException) {
+                null
             }
             if (bytes == null) {
                 complete(key, null)

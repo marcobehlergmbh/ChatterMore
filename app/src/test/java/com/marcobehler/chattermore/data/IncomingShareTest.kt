@@ -51,8 +51,6 @@ class IncomingShareTest {
                 uris = listOf(
                     "content://gallery/one",
                     "content://gallery/two",
-                    "file:///sdcard/Download/report.pdf",
-                    "android.resource://other.app/raw/item",
                 ),
                 text = "",
             ),
@@ -109,5 +107,17 @@ class IncomingShareTest {
         assertEquals("Existing\nShared caption", combineSharedDraftText("Existing", "Shared caption"))
         assertEquals("Existing", combineSharedDraftText("Existing", ""))
         assertEquals("Shared caption", combineSharedDraftText("", "Shared caption"))
+    }
+
+    @Test
+    fun `external shares cannot reference private files or our capture provider`() {
+        assertTrue(normalizeSharedUriStrings(listOf(
+            "file:///data/user/0/com.marcobehler.chattermore/shared_prefs/connection.xml",
+            "android.resource://com.marcobehler.chattermore/raw/private",
+            "content://com.marcobehler.chattermore.fileprovider/captures/photo.jpg",
+            "content://0@com.marcobehler.chattermore.fileprovider/captures/photo.jpg",
+            "content://%63om.marcobehler.chattermore.fileprovider/captures/photo.jpg",
+            "content:///no-provider",
+        )).isEmpty())
     }
 }

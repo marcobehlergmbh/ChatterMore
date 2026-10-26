@@ -33,7 +33,7 @@ class ChatterMoreApplication : Application() {
         AppContainer(
             context = this,
             api = MattermostApi(client, uploadClient),
-            attachmentDataSource = AttachmentDataSource(contentResolver),
+            attachmentDataSource = AttachmentDataSource(this),
             socket = MattermostSocket(client),
             imageLoader = MattermostImageLoader(this, client),
             sunoResolver = SunoAudioResolver(client),
