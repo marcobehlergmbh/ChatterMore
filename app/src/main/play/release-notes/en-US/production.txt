@@ -1,0 +1,1 @@
+Choose a channel or DM when sharing files from another app, with destination search and protection for existing drafts. Also improves keyboard dismissal, message composer focus, and conversation history loading and scrolling.

@@ -62,10 +62,30 @@ class FeedStore(
         }
     }
 
+    fun mergeNewer(
+        posts: Collection<MattermostPost>,
+        profiles: Collection<MattermostUser> = emptyList(),
+    ): List<FeedMutation> {
+        val mutations = merge(posts, profiles, retainNewest = true, pageMerge = true)
+        val inserts = mutations.filterIsInstance<FeedMutation.Insert>()
+        val firstIndex = inserts.firstOrNull()?.index ?: return mutations
+        val isContiguousInsert = inserts.isNotEmpty() &&
+            inserts.size == mutations.size &&
+            inserts.indices.all { offset -> inserts[offset].index == firstIndex + offset }
+        return if (isContiguousInsert) {
+            listOf(FeedMutation.PageInsert(firstIndex, inserts.map(FeedMutation.Insert::item)))
+        } else if (mutations.isNotEmpty()) {
+            listOf(FeedMutation.PageWindow(snapshot()))
+        } else {
+            mutations
+        }
+    }
+
     private fun merge(
         posts: Collection<MattermostPost>,
         profiles: Collection<MattermostUser>,
         retainNewest: Boolean,
+        pageMerge: Boolean = false,
     ): List<FeedMutation> {
         users.putAll(profiles.associateBy(MattermostUser::id))
         val mutations = mutableListOf<FeedMutation>()
@@ -104,7 +124,10 @@ class FeedStore(
 
         if (items.size > maxItems) {
             trimToMax(retainNewest)
-            return listOf(FeedMutation.Replace(snapshot()))
+            return listOf(
+                if (pageMerge) FeedMutation.PageWindow(snapshot())
+                else FeedMutation.Replace(snapshot()),
+            )
         }
         return mutations
     }
@@ -183,6 +206,13 @@ class FeedStore(
     fun oldestServerId(): String? = items.firstNotNullOfOrNull(FeedItem::serverId)
 
     fun newestServerId(): String? = items.asReversed().firstNotNullOfOrNull(FeedItem::serverId)
+
+    fun serverIds(): Set<String> = items.mapNotNullTo(mutableSetOf(), FeedItem::serverId)
+
+    fun newestServerIdAmong(serverIds: Set<String>): String? =
+        items.asReversed().firstNotNullOfOrNull { item ->
+            item.serverId?.takeIf(serverIds::contains)
+        }
 
     fun isCurrent(post: MattermostPost): Boolean =
         items.any { it.serverId == post.id && it.updateAt == post.updateAt }

@@ -10,7 +10,11 @@ data class IncomingShare(
     val id: String = UUID.randomUUID().toString(),
     val attachments: List<AttachmentSelection>,
     val text: String,
-)
+    val destinationChannelId: String? = null,
+) {
+    fun isReadyFor(channelId: String?): Boolean =
+        destinationChannelId != null && destinationChannelId == channelId
+}
 
 class IncomingShareParser {
     fun parse(intent: Intent): IncomingShare? {

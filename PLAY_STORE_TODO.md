@@ -3,9 +3,39 @@
 Work through this list from top to bottom. The first submission can proceed
 without implementing every possible user-generated-content policy feature.
 
-Last updated: August 1, 2026
+Last updated: October 26, 2026
 
 ## Current Play Console checkpoint
+
+Verified on the public Google Play listing on October 26, 2026:
+
+- Production: `0.1.4` (`versionCode` 5) is **published** and publicly available
+  at `https://play.google.com/store/apps/details?id=com.marcobehler.chattermore`.
+  The listing shows "Released on" August 16, 2026 and "Updated on"
+  September 11, 2026. It replaced the previous production version `0.1.2` (3).
+
+Verified through the Google Play Developer API on September 11, 2026:
+
+- Production: `0.1.4` (`versionCode` 5) was created for full rollout to 177 of
+  177 countries and entered review in Play Console on September 11, 2026.
+- Internal testing: `0.1.4` (`versionCode` 5), uploaded and rolled out with
+  status `completed`. Adds a searchable channel/DM picker before external
+  file uploads, with confirmation before discarding an existing draft.
+- The uploaded bundle's SHA-256 matches the signed local archive in
+  `.release-artifacts/0.1.4-5/`, which also contains the R8 mapping and verified
+  Play track status. Release validation passed all 171 unit tests and lint.
+  The new sharing flow has not been verified on a device.
+- Production promotion records and release notes are archived alongside the
+  bundle in `.release-artifacts/0.1.4-5/`.
+- Previous internal release `0.1.3` (4) included keyboard dismissal, composer
+  focus, and conversation history-loading improvements; the keyboard fixes
+  passed four emulator regression tests.
+
+The initial-submission checklist below is historical and has not been
+reconciled with the completed production release. Its unchecked items do not
+establish the current state of Play Console.
+
+## Historical initial-submission checkpoint (August 1, 2026)
 
 The Play developer account has been verified, the `ChatterMore` Play Console
 app has been created, and version `0.1.0` (`versionCode` 1) has been rolled out

@@ -9,5 +9,13 @@ internal object HistoryPrefetchPolicy {
     }
 
     fun shouldPrefetch(firstVisibleItem: Int, itemCount: Int): Boolean =
+        shouldPrefetchOlder(firstVisibleItem, itemCount)
+
+    fun shouldPrefetchOlder(firstVisibleItem: Int, itemCount: Int): Boolean =
         firstVisibleItem >= 0 && firstVisibleItem <= threshold(itemCount)
+
+    fun shouldPrefetchNewer(lastVisibleItem: Int, itemCount: Int): Boolean =
+        lastVisibleItem >= 0 &&
+            itemCount > 0 &&
+            lastVisibleItem >= itemCount - 1 - threshold(itemCount)
 }

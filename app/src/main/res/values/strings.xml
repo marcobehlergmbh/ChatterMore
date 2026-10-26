@@ -29,6 +29,12 @@
     <string name="remove_attachment">Remove attachment</string>
     <string name="camera_unavailable">No camera app is available.</string>
     <string name="shared_content_title">Add shared content?</string>
+    <string name="share_destination_title">Share to…</string>
+    <string name="search_share_destination">Search channels or DMs</string>
+    <string name="no_share_destinations">No channels or DMs found.</string>
+    <string name="share_switch_title">Discard current draft?</string>
+    <string name="share_switch_message">Sharing to %1$s will discard the message and attachments in your current composer.</string>
+    <string name="share_switch_confirm">Discard and continue</string>
     <string name="shared_content_conflict">There is already a message or attachment in the composer. Add the shared content to it, replace it, or cancel sharing.</string>
     <string name="add_shared_content">Add</string>
     <string name="replace_shared_content">Replace</string>

@@ -20,4 +20,13 @@ class HistoryPrefetchPolicyTest {
         assertTrue(HistoryPrefetchPolicy.shouldPrefetch(5, 100))
         assertFalse(HistoryPrefetchPolicy.shouldPrefetch(-1, 100))
     }
+
+    @Test
+    fun `prefetch starts symmetrically before newer boundary`() {
+        assertFalse(HistoryPrefetchPolicy.shouldPrefetchNewer(78, 100))
+        assertTrue(HistoryPrefetchPolicy.shouldPrefetchNewer(79, 100))
+        assertTrue(HistoryPrefetchPolicy.shouldPrefetchNewer(99, 100))
+        assertFalse(HistoryPrefetchPolicy.shouldPrefetchNewer(-1, 100))
+        assertFalse(HistoryPrefetchPolicy.shouldPrefetchNewer(0, 0))
+    }
 }

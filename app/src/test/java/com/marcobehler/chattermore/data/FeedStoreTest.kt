@@ -176,6 +176,47 @@ class FeedStoreTest {
     }
 
     @Test
+    fun `newer page is emitted as one range insertion`() {
+        val store = FeedStore("Unsupported", maxItems = 10)
+        store.replace((1..3).map { post("post-$it", it.toLong()) }, listOf(user))
+
+        val mutations = store.mergeNewer((4..6).map { post("post-$it", it.toLong()) })
+
+        val page = mutations.single() as FeedMutation.PageInsert
+        assertEquals(3, page.index)
+        assertEquals(listOf("post-4", "post-5", "post-6"), page.items.map { it.serverId })
+        assertEquals((1..6).map { "post-$it" }, store.snapshot().map { it.serverId })
+    }
+
+    @Test
+    fun `newer pagination slides bounded window without a full replace`() {
+        val store = FeedStore("Unsupported", maxItems = 3)
+        store.replace((1..3).map { post("post-$it", it.toLong()) }, listOf(user))
+
+        val mutations = store.mergeNewer((4..5).map { post("post-$it", it.toLong()) })
+
+        val window = mutations.single() as FeedMutation.PageWindow
+        assertEquals(listOf("post-3", "post-4", "post-5"), window.items.map { it.serverId })
+        assertEquals(window.items, store.snapshot())
+    }
+
+    @Test
+    fun `newer page inserts before an already delivered live post`() {
+        val store = FeedStore("Unsupported", maxItems = 10)
+        store.replace((1..3).map { post("post-$it", it.toLong()) }, listOf(user))
+        store.merge(listOf(post("post-10", 10)))
+
+        val mutations = store.mergeNewer((4..6).map { post("post-$it", it.toLong()) })
+
+        val page = mutations.single() as FeedMutation.PageInsert
+        assertEquals(3, page.index)
+        assertEquals(
+            listOf("post-1", "post-2", "post-3", "post-4", "post-5", "post-6", "post-10"),
+            store.snapshot().map { it.serverId },
+        )
+    }
+
+    @Test
     fun `pending insert keeps adapter and bounded store in sync`() {
         val store = FeedStore("Unsupported", maxItems = 2)
         store.replace(listOf(post("post-1", 1), post("post-2", 2)), listOf(user))

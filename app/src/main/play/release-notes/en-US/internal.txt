@@ -1,1 +1,1 @@
-Adds quoted-message styling and fast message search inside channels and direct conversations.
+Choose a channel or DM when sharing files from another app. Search for a destination before uploading, then review the attachments and tap Send. Existing drafts are protected when switching conversations.

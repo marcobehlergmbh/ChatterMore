@@ -21,14 +21,15 @@ preparation.
 - Opens a direct-message conversation by tapping an author, avatar, or resolved `@username`.
 - Sends and receives direct messages through the same bounded, real-time channel pipeline.
 - Returns from every conversation to the overview with the header or Android back action.
-- Loads recent history and pages backward with Mattermost's `before=<post_id>` cursor.
+- Loads recent history and prefetches in both directions with Mattermost's
+  `before=<post_id>` and `after=<post_id>` cursors, including around search jumps.
 - Fetches missed/new messages with `after=<post_id>` and a defensive latest-page overlap.
 - Receives `posted`, `post_edited`, and `post_deleted` WebSocket events while foregrounded.
 - Inserts outgoing messages optimistically and reconciles REST/WebSocket acknowledgements with `pending_post_id`.
 - Keeps optimistic messages visually normal for 500 ms, then underlines them until confirmed.
 - Retries failed sends without losing the message text.
 - Uploads gallery media, camera captures, and files with progress before sending them with optional text.
-- Accepts Android single- and multi-file shares, preparing media previews or regular file attachments plus shared text without auto-sending.
+- Accepts Android single- and multi-file shares with a searchable picker for joined channels and existing DMs. Files upload only after choosing a destination and remain in the composer with any shared text until you tap Send.
 - Validates known attachment sizes against the Mattermost server limit before upload.
 - Renders authenticated image attachments from bounded server-generated previews.
 - Renders cached user avatars with live Active, Away, or Offline presence badges.

@@ -299,6 +299,8 @@ sealed interface FeedMutation {
         val conversationId: String? = null,
     ) : FeedMutation
     data class Prepend(val items: List<FeedItem>) : FeedMutation
+    data class PageInsert(val index: Int, val items: List<FeedItem>) : FeedMutation
+    data class PageWindow(val items: List<FeedItem>) : FeedMutation
     data class Insert(val index: Int, val item: FeedItem) : FeedMutation
     data class Update(val previousKey: String, val item: FeedItem) : FeedMutation
     data class Remove(val key: String) : FeedMutation

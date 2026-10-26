@@ -61,6 +61,7 @@ class ChannelRepository(
     private val presenceStore = PresenceStore()
     private val feedMutex = Mutex()
     private val olderMutex = Mutex()
+    private val newerMutex = Mutex()
     private val refreshMutex = Mutex()
     private val mentionMutex = Mutex()
     private val directoryMutex = Mutex()
@@ -109,6 +110,11 @@ class ChannelRepository(
     private var initialized = false
     private var foreground = false
     private var olderExhausted = false
+    private var newerExhausted = true
+    private var newerCursor: String? = null
+    private var newerBoundaryId: String? = null
+    private val pagedVisiblePostIds = mutableSetOf<String>()
+    private var pageWindowGeneration = 0
     private var socketJob: Job? = null
     private var socketCursor: SocketCursor? = null
     private var socketReady = CompletableDeferred<Unit>()
@@ -135,6 +141,11 @@ class ChannelRepository(
         presenceGeneration++
         socketCursor = null
         olderExhausted = false
+        newerExhausted = true
+        newerCursor = null
+        newerBoundaryId = null
+        pagedVisiblePostIds.clear()
+        pageWindowGeneration++
         presenceStore.clear()
         _userPresence.value = emptyMap()
         _channelUsers.value = emptyList()
@@ -265,6 +276,11 @@ class ChannelRepository(
         activeReadAckJob?.cancel()
         activeReadAckJob = null
         postArrivedDuringConversationSwitch.set(false)
+        newerExhausted = true
+        newerCursor = null
+        newerBoundaryId = null
+        pagedVisiblePostIds.clear()
+        pageWindowGeneration++
         channelUsersGeneration++
         _channelUsers.value = if (::currentUser.isInitialized) listOf(currentUser) else emptyList()
     }
@@ -282,7 +298,9 @@ class ChannelRepository(
         if (olderExhausted || !olderMutex.tryLock()) return
         try {
             val token = activeToken() ?: return
-            val visibleCursor = feedMutex.withLock { feed.oldestServerId() } ?: return
+            val (visibleCursor, windowGeneration) = feedMutex.withLock {
+                (feed.oldestServerId() ?: return) to pageWindowGeneration
+            }
             var requestCursor = visibleCursor
             repeat(MAX_HISTORY_SCAN_PAGES) {
                 val page = api.posts(config, token.conversation.channelId, before = requestCursor)
@@ -294,8 +312,16 @@ class ChannelRepository(
                 }
                 val profiles = fetchProfiles(posts)
                 val result = feedMutex.withLock {
-                    if (!isActiveLocked(token)) return@withLock null
-                    feed.mergeOlder(posts, profiles) to feed.oldestServerId()
+                    if (
+                        !isActiveLocked(token) ||
+                        pageWindowGeneration != windowGeneration
+                    ) {
+                        return@withLock null
+                    }
+                    val mutations = feed.mergeOlder(posts, profiles)
+                    recordPagedPostsLocked(posts)
+                    repairNewerFrontierAfterTrimLocked()
+                    mutations to feed.oldestServerId()
                 } ?: return
                 val (mutations, newVisibleCursor) = result
                 if (newVisibleCursor != visibleCursor) {
@@ -315,6 +341,65 @@ class ChannelRepository(
             }
         } finally {
             olderMutex.unlock()
+        }
+    }
+
+    suspend fun loadNewer() {
+        if (newerExhausted || !newerMutex.tryLock()) return
+        try {
+            val token = activeToken() ?: return
+            val (initialCursor, windowGeneration) = feedMutex.withLock {
+                (newerCursor ?: feed.newestServerId() ?: return) to pageWindowGeneration
+            }
+            var requestCursor = initialCursor
+            repeat(MAX_HISTORY_SCAN_PAGES) {
+                val page = api.posts(
+                    config = config,
+                    channelId = token.conversation.channelId,
+                    after = requestCursor,
+                )
+                if (!isActive(token)) return
+                val posts = page.orderedPosts
+                if (posts.isEmpty()) {
+                    if (isActive(token)) newerExhausted = true
+                    return
+                }
+                val nextRequestCursor = posts.maxWithOrNull(POST_ORDER)?.id
+                if (nextRequestCursor.isNullOrBlank() || nextRequestCursor == requestCursor) {
+                    if (isActive(token)) newerExhausted = true
+                    return
+                }
+                val profiles = fetchProfiles(posts)
+                val mutations = feedMutex.withLock {
+                    if (
+                        !isActiveLocked(token) ||
+                        pageWindowGeneration != windowGeneration
+                    ) {
+                        return@withLock null
+                    }
+                    val pageMutations = feed.mergeNewer(posts, profiles)
+                    recordPagedPostsLocked(posts)
+                    newerCursor = nextRequestCursor
+                    newestVisiblePost(posts)?.let { newerBoundaryId = it.id }
+                    if (posts.size < PAGE_SIZE) newerExhausted = true
+                    pageMutations
+                } ?: return
+                emitAll(mutations)
+                scheduleMentionResolution(posts)
+                ensurePresence(posts.map(MattermostPost::userId))
+                val addedRows = mutations.any {
+                    it is FeedMutation.PageInsert ||
+                        it is FeedMutation.PageWindow ||
+                        it is FeedMutation.Insert
+                }
+                if (addedRows || newerExhausted) return
+
+                // A page can consist only of hidden thread replies or posts already delivered by
+                // the socket. Advance the REST frontier until the visible window grows.
+                requestCursor = nextRequestCursor
+            }
+        } finally {
+            newerMutex.unlock()
         }
     }
 
@@ -358,7 +443,12 @@ class ChannelRepository(
             if (!isActiveLocked(token)) return@withLock null
             olderExhausted = false
             activeConversationAtLatest = false
-            feed.replace(posts, profiles + currentUser)
+            feed.replace(posts, profiles + currentUser).also {
+                resetPageWindowLocked(
+                    posts = posts,
+                    atLatest = newerPage.orderedPosts.size < MESSAGE_CONTEXT_SIDE_SIZE,
+                )
+            }
         } ?: return false
         _mutations.emit(mutation)
         scheduleMentionResolution(posts)
@@ -376,11 +466,18 @@ class ChannelRepository(
     suspend fun refreshLatest() {
         if (!initialized || !refreshMutex.tryLock()) return
         _refreshing.value = true
+        var newerLocked = false
         try {
+            newerMutex.lock()
+            newerLocked = true
             val token = activeToken() ?: return
-            var cursor = feedMutex.withLock { feed.newestServerId() }
+            val (initialCursor, windowGeneration) = feedMutex.withLock {
+                (newerCursor ?: feed.newestServerId()) to pageWindowGeneration
+            }
+            var cursor = initialCursor
             val seenCursors = mutableSetOf<String>()
             var pages = 0
+            var caughtUp = cursor == null
             if (cursor != null) {
                 while (pages++ < MAX_REFRESH_PAGES) {
                     val currentCursor = cursor ?: break
@@ -392,16 +489,36 @@ class ChannelRepository(
                     )
                     if (!isActive(token)) return
                     val posts = page.orderedPosts
+                    if (posts.isEmpty()) {
+                        caughtUp = true
+                        break
+                    }
+                    val next = posts.maxWithOrNull(POST_ORDER)?.id
+                    if (next.isNullOrBlank() || next == currentCursor) {
+                        caughtUp = true
+                        break
+                    }
                     val profiles = fetchProfiles(posts)
                     val mutations = feedMutex.withLock {
-                        if (!isActiveLocked(token)) return@withLock null
-                        feed.merge(posts, profiles)
+                        if (
+                            !isActiveLocked(token) ||
+                            pageWindowGeneration != windowGeneration
+                        ) {
+                            return@withLock null
+                        }
+                        feed.mergeNewer(posts, profiles).also {
+                            recordPagedPostsLocked(posts)
+                            newerCursor = next
+                            newestVisiblePost(posts)?.let { post -> newerBoundaryId = post.id }
+                        }
                     } ?: return
                     emitAll(mutations)
                     scheduleMentionResolution(posts)
                     ensurePresence(posts.map(MattermostPost::userId))
-                    val next = posts.maxWithOrNull(POST_ORDER)?.id
-                    if (posts.size < PAGE_SIZE || next.isNullOrBlank() || next == currentCursor) break
+                    if (posts.size < PAGE_SIZE) {
+                        caughtUp = true
+                        break
+                    }
                     cursor = next
                 }
             }
@@ -411,14 +528,29 @@ class ChannelRepository(
             if (!isActive(token)) return
             val profiles = fetchProfiles(head.orderedPosts)
             val mutations = feedMutex.withLock {
-                if (!isActiveLocked(token)) return@withLock null
-                feed.merge(head.orderedPosts, profiles)
+                if (
+                    !isActiveLocked(token) ||
+                    pageWindowGeneration != windowGeneration
+                ) {
+                    return@withLock null
+                }
+                feed.merge(head.orderedPosts, profiles).also {
+                    if (caughtUp) {
+                        recordPagedPostsLocked(head.orderedPosts)
+                        newestVisiblePost(head.orderedPosts)?.let { post ->
+                            newerCursor = post.id
+                            newerBoundaryId = post.id
+                        }
+                    }
+                    newerExhausted = caughtUp
+                }
             } ?: return
             emitAll(mutations)
             scheduleMentionResolution(head.orderedPosts)
             ensurePresence(head.orderedPosts.map(MattermostPost::userId))
         } finally {
             _refreshing.value = false
+            if (newerLocked) newerMutex.unlock()
             refreshMutex.unlock()
         }
     }
@@ -512,6 +644,11 @@ class ChannelRepository(
         conversationSwitching = false
         conversationGeneration.incrementAndGet()
         postArrivedDuringConversationSwitch.set(false)
+        newerExhausted = true
+        newerCursor = null
+        newerBoundaryId = null
+        pagedVisiblePostIds.clear()
+        pageWindowGeneration++
         presenceGeneration++
         channelUsersGeneration++
         presenceStore.clear()
@@ -607,6 +744,7 @@ class ChannelRepository(
                 val mutation = feed.replace(posts, profiles + currentUser).copy(
                     conversationId = target.channelId,
                 )
+                resetPageWindowLocked(posts, atLatest = true)
                 _mutations.emit(mutation)
             }
             scheduleMentionResolution(posts)
@@ -795,7 +933,9 @@ class ChannelRepository(
         token ?: return
         val mutations = feedMutex.withLock {
             if (!isActiveLocked(token)) return@withLock null
-            feed.merge(listOf(signal.post))
+            feed.merge(listOf(signal.post)).also {
+                repairNewerFrontierAfterTrimLocked()
+            }
         } ?: return
         invalidateRecentPage(token.conversation.channelId)
         emitAll(mutations)
@@ -1320,6 +1460,47 @@ class ChannelRepository(
     private suspend fun emitAll(mutations: Collection<FeedMutation>) {
         mutations.forEach { _mutations.emit(it) }
     }
+
+    private fun resetPageWindowLocked(
+        posts: Collection<MattermostPost>,
+        atLatest: Boolean,
+    ) {
+        pageWindowGeneration++
+        pagedVisiblePostIds.clear()
+        pagedVisiblePostIds += posts.asSequence()
+            .filter(::isVisibleRootPost)
+            .map(MattermostPost::id)
+        pagedVisiblePostIds.retainAll(feed.serverIds())
+        newerCursor = posts.maxWithOrNull(POST_ORDER)?.id
+        newerBoundaryId = newestVisiblePost(posts)?.id
+        newerExhausted = atLatest
+    }
+
+    private fun recordPagedPostsLocked(posts: Collection<MattermostPost>) {
+        pagedVisiblePostIds += posts.asSequence()
+            .filter(::isVisibleRootPost)
+            .map(MattermostPost::id)
+        pagedVisiblePostIds.retainAll(feed.serverIds())
+    }
+
+    private fun repairNewerFrontierAfterTrimLocked() {
+        val residentIds = feed.serverIds()
+        pagedVisiblePostIds.retainAll(residentIds)
+        val boundary = newerBoundaryId ?: return
+        if (boundary in residentIds) return
+        val retainedBoundary = feed.newestServerIdAmong(pagedVisiblePostIds)
+        newerBoundaryId = retainedBoundary
+        newerCursor = retainedBoundary
+        newerExhausted = false
+    }
+
+    private fun newestVisiblePost(posts: Collection<MattermostPost>): MattermostPost? =
+        posts.asSequence()
+            .filter(::isVisibleRootPost)
+            .maxWithOrNull(POST_ORDER)
+
+    private fun isVisibleRootPost(post: MattermostPost): Boolean =
+        post.id.isNotBlank() && post.rootId.isBlank() && post.deleteAt == 0L
 
     private companion object {
         const val PAGE_SIZE = 100

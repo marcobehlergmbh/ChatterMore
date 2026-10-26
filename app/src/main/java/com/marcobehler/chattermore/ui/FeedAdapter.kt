@@ -157,6 +157,94 @@ class FeedAdapter(
         if (newItems.size < items.size) notifyItemChanged(newItems.size, PAYLOAD_GROUPING)
     }
 
+    fun insertRange(index: Int, newItems: List<FeedItem>) {
+        if (newItems.isEmpty()) return
+        val target = index.coerceIn(0, items.size)
+        items.addAll(target, newItems)
+        rebuildPositions(target)
+        notifyItemRangeInserted(target, newItems.size)
+        if (target > 0) notifyItemChanged(target - 1, PAYLOAD_GROUPING)
+        if (target + newItems.size < items.size) {
+            notifyItemChanged(target + newItems.size, PAYLOAD_GROUPING)
+        }
+    }
+
+    fun replacePageWindow(newItems: List<FeedItem>) {
+        val oldKeys = items.mapTo(mutableSetOf(), FeedItem::key)
+        val oldPreviousKeys = items.mapIndexed { index, item ->
+            item.key to items.getOrNull(index - 1)?.key
+        }.toMap()
+        val oldNextKeys = items.mapIndexed { index, item ->
+            item.key to items.getOrNull(index + 1)?.key
+        }.toMap()
+        val newKeys = newItems.mapTo(mutableSetOf(), FeedItem::key)
+        var removalEnd = items.lastIndex
+        while (removalEnd >= 0) {
+            if (items[removalEnd].key in newKeys) {
+                removalEnd--
+                continue
+            }
+            var removalStart = removalEnd
+            while (removalStart > 0 && items[removalStart - 1].key !in newKeys) {
+                removalStart--
+            }
+            val count = removalEnd - removalStart + 1
+            items.subList(removalStart, removalEnd + 1).clear()
+            notifyItemRangeRemoved(removalStart, count)
+            removalEnd = removalStart - 1
+        }
+
+        var index = 0
+        while (index < newItems.size) {
+            if (index < items.size && items[index].key == newItems[index].key) {
+                index++
+                continue
+            }
+            val retainedKey = items.getOrNull(index)?.key
+            var insertionEnd = index
+            while (
+                insertionEnd < newItems.size &&
+                (retainedKey == null || newItems[insertionEnd].key != retainedKey)
+            ) {
+                insertionEnd++
+            }
+            val inserted = newItems.subList(index, insertionEnd)
+            if (inserted.isEmpty()) {
+                // Page merges preserve the ordering of retained stable keys. Fall back safely if
+                // that invariant is ever broken by a future mutation type.
+                replace(newItems)
+                return
+            }
+            items.addAll(index, inserted)
+            notifyItemRangeInserted(index, inserted.size)
+            index = insertionEnd
+        }
+
+        newItems.forEachIndexed { itemIndex, newItem ->
+            if (items[itemIndex] != newItem) {
+                items[itemIndex] = newItem
+                val changedStart = (itemIndex - 1).coerceAtLeast(0)
+                notifyItemRangeChanged(
+                    changedStart,
+                    minOf(3, items.size - changedStart),
+                    PAYLOAD_CONTENT,
+                )
+            }
+        }
+        rebuildPositions()
+        newItems.forEachIndexed { itemIndex, item ->
+            if (
+                item.key in oldKeys &&
+                (
+                    oldPreviousKeys[item.key] != newItems.getOrNull(itemIndex - 1)?.key ||
+                        oldNextKeys[item.key] != newItems.getOrNull(itemIndex + 1)?.key
+                )
+            ) {
+                notifyItemChanged(itemIndex, PAYLOAD_GROUPING)
+            }
+        }
+    }
+
     fun insert(index: Int, item: FeedItem) {
         val target = index.coerceIn(0, items.size)
         items.add(target, item)

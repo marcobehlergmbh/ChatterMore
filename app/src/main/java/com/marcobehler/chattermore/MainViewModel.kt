@@ -126,6 +126,7 @@ class MainViewModel(
     private val _messageEdit = MutableStateFlow<MessageEditState?>(null)
     private val _composer = MutableStateFlow(ComposerState())
     private val _incomingShares = MutableStateFlow<List<IncomingShare>>(emptyList())
+    private val _incomingShareDestinations = MutableStateFlow<List<ConversationSummary>>(emptyList())
     private val _messageSearch = MutableStateFlow(MessageSearchUiState())
     private val _composerMessages = MutableSharedFlow<String>(extraBufferCapacity = 8)
     private val uploadJobs = mutableMapOf<String, Job>()
@@ -154,6 +155,7 @@ class MainViewModel(
     private var authenticatedUser: MattermostUser? = null
     private var authenticatedTeam: MattermostTeam? = null
     private var loadingOlder = false
+    private var loadingNewer = false
     private var conversationRequestGeneration = 0
     private var backgroundSettingsGeneration = 0
     private var lastReadyConversationScreen: ScreenState.Conversation? = null
@@ -164,6 +166,7 @@ class MainViewModel(
     val messageEdit: StateFlow<MessageEditState?> = _messageEdit.asStateFlow()
     val composer: StateFlow<ComposerState> = _composer.asStateFlow()
     val incomingShares: StateFlow<List<IncomingShare>> = _incomingShares.asStateFlow()
+    val incomingShareDestinations = _incomingShareDestinations.asStateFlow()
     val messageSearch: StateFlow<MessageSearchUiState> = _messageSearch.asStateFlow()
     val composerMessages: SharedFlow<String> = _composerMessages.asSharedFlow()
     val mutations: SharedFlow<FeedMutation> = repository.mutations
@@ -215,6 +218,7 @@ class MainViewModel(
                         }
                     }
                 }
+                _incomingShareDestinations.value = overviewConversations.toList()
             }
         }
         viewModelScope.launch {
@@ -389,6 +393,7 @@ class MainViewModel(
         if (screen is ScreenState.Overview) {
             overviewConversations.clear()
             overviewConversations.addAll(screen.conversations)
+            _incomingShareDestinations.value = overviewConversations.toList()
             overviewScreen = screen
             lastReadyConversationScreen = null
         } else if (screen is ScreenState.Conversation) {
@@ -745,6 +750,20 @@ class MainViewModel(
         }
     }
 
+    fun loadNewer() {
+        if (loadingNewer) return
+        loadingNewer = true
+        viewModelScope.launch {
+            try {
+                repository.loadNewer()
+            } catch (_: Exception) {
+                // A later scroll can retry transient history failures.
+            } finally {
+                loadingNewer = false
+            }
+        }
+    }
+
     fun refreshLatest() {
         viewModelScope.launch { runCatching { repository.refreshLatest() } }
     }
@@ -800,6 +819,19 @@ class MainViewModel(
 
     fun enqueueIncomingShare(share: IncomingShare) {
         _incomingShares.update { queued -> queued + share }
+    }
+
+    fun selectIncomingShareDestination(id: String, destination: ConversationSummary) {
+        if (_incomingShares.value.firstOrNull()?.id != id) return
+        if (overviewConversations.none { it.id == destination.id }) return
+        _incomingShares.update { queued ->
+            queued.map { share ->
+                if (share.id == id) share.copy(destinationChannelId = destination.id) else share
+            }
+        }
+        if (_screen.value.readyConversation()?.id != destination.id) {
+            openConversation(destination)
+        }
     }
 
     fun consumeIncomingShare(id: String): Boolean {
@@ -1031,6 +1063,7 @@ class MainViewModel(
         container.imageLoader.configure(directory.config)
         overviewConversations.clear()
         overviewConversations.addAll(directory.conversations)
+        _incomingShareDestinations.value = overviewConversations.toList()
         val overview = ScreenState.Overview(
             teamId = directory.team.id,
             teamTitle = directory.team.displayName.ifBlank { directory.team.name },
@@ -1279,6 +1312,8 @@ private fun ScreenState.readyConversation(): ScreenState.Conversation? =
 private fun FeedMutation.itemsForCheckpoint(): List<FeedItem> = when (this) {
     is FeedMutation.Replace -> items
     is FeedMutation.Prepend -> items
+    is FeedMutation.PageInsert -> items
+    is FeedMutation.PageWindow -> items
     is FeedMutation.Insert -> listOf(item)
     is FeedMutation.Update -> listOf(item)
     is FeedMutation.Remove -> emptyList()

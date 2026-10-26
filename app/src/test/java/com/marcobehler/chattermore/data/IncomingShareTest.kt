@@ -1,9 +1,33 @@
 package com.marcobehler.chattermore.data
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class IncomingShareTest {
+    @Test
+    fun `incoming share cannot be applied to the restored conversation before selection`() {
+        val share = IncomingShare(attachments = emptyList(), text = "Shared caption")
+
+        assertFalse(share.isReadyFor("wd-exile"))
+        assertFalse(share.isReadyFor(null))
+    }
+
+    @Test
+    fun `selected share waits for its destination and cannot follow unrelated navigation`() {
+        val share = IncomingShare(
+            attachments = emptyList(),
+            text = "Shared caption",
+            destinationChannelId = "chosen-dm",
+        )
+
+        assertFalse(share.isReadyFor(null))
+        assertFalse(share.isReadyFor("loading:chosen-dm:1"))
+        assertFalse(share.isReadyFor("other-channel"))
+        assertTrue(share.isReadyFor("chosen-dm"))
+    }
+
     @Test
     fun `single share accepts stream and caption`() {
         assertEquals(

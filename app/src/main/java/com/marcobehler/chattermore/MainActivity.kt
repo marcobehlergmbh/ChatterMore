@@ -17,7 +17,6 @@ import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
-import android.view.inputmethod.InputMethodManager
 import android.widget.Button
 import android.widget.CheckBox
 import android.widget.EditText
@@ -60,6 +59,7 @@ import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import com.marcobehler.chattermore.model.ConnectionState
 import com.marcobehler.chattermore.model.ConversationMutation
+import com.marcobehler.chattermore.model.ConversationSummary
 import com.marcobehler.chattermore.model.DeliveryState
 import com.marcobehler.chattermore.model.FeedMutation
 import com.marcobehler.chattermore.model.FeedImage
@@ -193,6 +193,12 @@ class MainActivity : ComponentActivity() {
             closeMessageSearch()
         }
     }
+    private val keyboardBackCallback = object : OnBackPressedCallback(false) {
+        override fun handleOnBackPressed() {
+            hideKeyboard()
+        }
+    }
+    private var pendingComposerFocus: Runnable? = null
     private val galleryLauncher = registerForActivityResult(
         ActivityResultContracts.PickMultipleVisualMedia(MAX_ATTACHMENTS),
     ) { uris ->
@@ -257,6 +263,7 @@ class MainActivity : ComponentActivity() {
         onBackPressedDispatcher.addCallback(this, conversationBackCallback)
         onBackPressedDispatcher.addCallback(this, attachmentBackCallback)
         onBackPressedDispatcher.addCallback(this, messageSearchBackCallback)
+        onBackPressedDispatcher.addCallback(this, keyboardBackCallback)
         configureInsets()
         configureAttachmentComposer()
         configureMentionAutocomplete()
@@ -317,6 +324,7 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onStop() {
+        cancelPendingComposerFocus()
         pendingScrollAnchor = captureScrollAnchor() ?: pendingScrollAnchor
         pendingVideoRestore = captureVideoPlayback()
         dismissMentionSuggestions()
@@ -404,6 +412,8 @@ class MainActivity : ComponentActivity() {
             val keepBottom = ::adapter.isInitialized && isNearBottom()
             val keyboardOpened = keyboardVisible && !imeVisible
             imeVisible = keyboardVisible
+            if (!keyboardVisible) dismissMentionSuggestions()
+            updateKeyboardFocusHandling()
 
             view.setPadding(
                 bars.left,
@@ -447,9 +457,15 @@ class MainActivity : ComponentActivity() {
             updateComposerButtons()
             renderMentionSuggestions()
         }
-        cancelEditButton.setOnClickListener { viewModel.cancelEdit() }
-        conversationBackButton.setOnClickListener { returnToOverview() }
+        cancelEditButton.setOnClickListener {
+            cancelPendingComposerFocus()
+            viewModel.cancelEdit()
+        }
+        conversationBackButton.setOnClickListener {
+            if (keyboardBackCallback.isEnabled) hideKeyboard() else returnToOverview()
+        }
         searchMessagesButton.setOnClickListener {
+            cancelPendingComposerFocus()
             dismissMentionSuggestions()
             setAttachmentActionsVisible(false)
             viewModel.openMessageSearch()
@@ -726,6 +742,7 @@ class MainActivity : ComponentActivity() {
             }
         }
         messageInput.setOnFocusChangeListener { _, hasFocus ->
+            updateKeyboardFocusHandling()
             if (hasFocus) renderMentionSuggestions() else dismissMentionSuggestions()
         }
     }
@@ -892,12 +909,21 @@ class MainActivity : ComponentActivity() {
             override fun onScrolled(recyclerView: RecyclerView, dx: Int, dy: Int) {
                 if (
                     dy < 0 &&
-                    HistoryPrefetchPolicy.shouldPrefetch(
+                    HistoryPrefetchPolicy.shouldPrefetchOlder(
                         layoutManager.findFirstVisibleItemPosition(),
                         adapter.itemCount,
                     )
                 ) {
                     viewModel.loadOlder()
+                }
+                if (
+                    dy > 0 &&
+                    HistoryPrefetchPolicy.shouldPrefetchNewer(
+                        layoutManager.findLastVisibleItemPosition(),
+                        adapter.itemCount,
+                    )
+                ) {
+                    viewModel.loadNewer()
                 }
                 val atLatest = !recyclerView.canScrollVertically(1)
                 viewModel.setConversationAtLatest(atLatest)
@@ -1049,11 +1075,10 @@ class MainActivity : ComponentActivity() {
 
         if (!wasActive) {
             messageSearchInput.post {
+                if (!messageSearchInput.isShown || !viewModel.messageSearch.value.active) return@post
                 messageSearchInput.requestFocus()
                 WindowCompat.getInsetsController(window, messageSearchInput)
                     .show(WindowInsetsCompat.Type.ime())
-                val manager = getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager
-                manager.showSoftInput(messageSearchInput, InputMethodManager.SHOW_IMPLICIT)
             }
         }
         if (state.openingPostId != null) {
@@ -1076,6 +1101,7 @@ class MainActivity : ComponentActivity() {
     private fun openDirectMessage(userId: String, title: String) {
         val current = viewModel.screen.value as? ScreenState.Conversation ?: return
         if (!current.loading && current.peerUserId == userId) return
+        hideKeyboard()
         dismissMentionSuggestions()
         setAttachmentActionsVisible(false)
         pendingScrollAnchor = null
@@ -1119,6 +1145,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun returnToOverview() {
+        hideKeyboard()
         dismissMentionSuggestions()
         setAttachmentActionsVisible(false)
         pendingScrollAnchor = null
@@ -1263,6 +1290,7 @@ class MainActivity : ComponentActivity() {
                 overviewTitle.text = state.teamTitle
                 conversationAdapter.replace(state.conversations)
                 overviewEmpty.isVisible = state.conversations.isEmpty()
+                handleNextIncomingShare()
             }
             is ScreenState.Conversation -> {
                 setupPanel.isVisible = false
@@ -1309,16 +1337,17 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun handleNextIncomingShare() {
-        val conversation = viewModel.screen.value as? ScreenState.Conversation
-        if (conversation == null || conversation.loading || incomingShareDialog != null) return
+        val screen = viewModel.screen.value
+        val conversation = screen as? ScreenState.Conversation
+        if (screen !is ScreenState.Overview && conversation == null) return
+        if (conversation?.loading == true || incomingShareDialog != null) return
         if (viewModel.messageEdit.value?.submitting == true) return
         val share = viewModel.incomingShares.value.firstOrNull() ?: return
-        val composer = viewModel.composer.value
-        val hasDraft = messageInput.text.isNotBlank() ||
-            viewModel.messageEdit.value != null ||
-            composer.attachments.isNotEmpty() ||
-            composer.resolvingCount > 0
-        if (!hasDraft) {
+        if (!share.isReadyFor(conversation?.id)) {
+            showIncomingShareDestinations(share)
+            return
+        }
+        if (!hasComposerDraft()) {
             applyIncomingShare(share, replaceDraft = false)
             return
         }
@@ -1352,7 +1381,115 @@ class MainActivity : ComponentActivity() {
             }
     }
 
+    private fun hasComposerDraft(): Boolean = messageInput.text.isNotBlank() ||
+        viewModel.messageEdit.value != null ||
+        viewModel.composer.value.attachments.isNotEmpty() ||
+        viewModel.composer.value.resolvingCount > 0
+
+    private fun showIncomingShareDestinations(share: IncomingShare) {
+        val spacing = (16 * resources.displayMetrics.density).toInt()
+        val content = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(spacing, 0, spacing, 0)
+        }
+        val search = EditText(this).apply {
+            setHint(R.string.search_share_destination)
+            setSingleLine(true)
+        }
+        val empty = TextView(this).apply {
+            setText(R.string.no_share_destinations)
+            setPadding(0, spacing, 0, spacing)
+        }
+        val destinationAdapter = ConversationAdapter(imageLoader) { destination ->
+            val picker = incomingShareDialog
+            val current = viewModel.screen.value as? ScreenState.Conversation
+            if (current?.id != destination.id && hasComposerDraft()) {
+                confirmIncomingShareSwitch(share, destination)
+            } else {
+                selectIncomingShareDestination(share, destination)
+            }
+            picker?.dismiss()
+        }
+        val list = RecyclerView(this).apply {
+            layoutManager = LinearLayoutManager(this@MainActivity)
+            adapter = destinationAdapter
+            itemAnimator = null
+        }
+        fun filterDestinations() {
+            val query = search.text.toString().trim().removePrefix("#").removePrefix("@")
+            val filtered = viewModel.incomingShareDestinations.value.filter {
+                it.title.contains(query, ignoreCase = true) ||
+                    it.channel.name.contains(query, ignoreCase = true) ||
+                    it.peerUsername?.contains(query, ignoreCase = true) == true
+            }
+            destinationAdapter.replace(filtered)
+            empty.isVisible = filtered.isEmpty()
+            list.isVisible = filtered.isNotEmpty()
+        }
+        content.addView(search)
+        content.addView(empty)
+        content.addView(list, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            (360 * resources.displayMetrics.density).toInt(),
+        ))
+        search.doAfterTextChanged { filterDestinations() }
+        filterDestinations()
+        val directoryUpdates = lifecycleScope.launch {
+            viewModel.incomingShareDestinations.collect { filterDestinations() }
+        }
+        incomingShareDialog = AlertDialog.Builder(this)
+            .setTitle(R.string.share_destination_title)
+            .setView(content)
+            .setNegativeButton(android.R.string.cancel) { _, _ -> viewModel.consumeIncomingShare(share.id) }
+            .setOnCancelListener { viewModel.consumeIncomingShare(share.id) }
+            .create()
+            .also { dialog ->
+                dialog.setOnDismissListener {
+                    if (incomingShareDialog === dialog) incomingShareDialog = null
+                    directoryUpdates.cancel()
+                    list.adapter = null
+                    messageInput.post(::handleNextIncomingShare)
+                }
+                dialog.show()
+            }
+    }
+
+    private fun confirmIncomingShareSwitch(share: IncomingShare, destination: ConversationSummary) {
+        incomingShareDialog = AlertDialog.Builder(this)
+            .setTitle(R.string.share_switch_title)
+            .setMessage(getString(R.string.share_switch_message, destination.title))
+            .setPositiveButton(R.string.share_switch_confirm) { _, _ ->
+                selectIncomingShareDestination(share, destination)
+            }
+            .setNegativeButton(android.R.string.cancel, null)
+            .create()
+            .also { dialog ->
+                dialog.setOnDismissListener {
+                    if (incomingShareDialog === dialog) incomingShareDialog = null
+                    messageInput.post(::handleNextIncomingShare)
+                }
+                dialog.show()
+            }
+    }
+
+    private fun selectIncomingShareDestination(share: IncomingShare, destination: ConversationSummary) {
+        viewModel.closeMessageSearch()
+        val current = viewModel.screen.value as? ScreenState.Conversation
+        if (current?.id != destination.id) {
+            hideKeyboard()
+            dismissMentionSuggestions()
+            setAttachmentActionsVisible(false)
+            pendingScrollAnchor = null
+            normalDraftAfterEdit = null
+            messageInput.text.clear()
+        }
+        viewModel.selectIncomingShareDestination(share.id, destination)
+        messageInput.post(::handleNextIncomingShare)
+    }
+
     private fun applyIncomingShare(share: IncomingShare, replaceDraft: Boolean) {
+        val conversation = viewModel.screen.value as? ScreenState.Conversation ?: return
+        if (conversation.loading || !share.isReadyFor(conversation.id)) return
         if (!viewModel.consumeIncomingShare(share.id)) return
         setAttachmentActionsVisible(false)
 
@@ -1402,6 +1539,8 @@ class MainActivity : ComponentActivity() {
         when (mutation) {
             is FeedMutation.Replace -> adapter.replace(mutation.items)
             is FeedMutation.Prepend -> adapter.prepend(mutation.items)
+            is FeedMutation.PageInsert -> adapter.insertRange(mutation.index, mutation.items)
+            is FeedMutation.PageWindow -> adapter.replacePageWindow(mutation.items)
             is FeedMutation.Insert -> adapter.insert(mutation.index, mutation.item)
             is FeedMutation.Update -> adapter.update(mutation.previousKey, mutation.item)
             is FeedMutation.Remove -> adapter.remove(mutation.key)
@@ -1424,6 +1563,15 @@ class MainActivity : ComponentActivity() {
                         firstPosition + mutation.items.size,
                         firstOffset,
                     )
+                }
+            }
+            is FeedMutation.PageInsert -> Unit
+            is FeedMutation.PageWindow -> {
+                if (firstKey != null) {
+                    val anchor = adapter.positionOf(firstKey)
+                    if (anchor != RecyclerView.NO_POSITION) {
+                        layoutManager.scrollToPositionWithOffset(anchor, firstOffset)
+                    }
                 }
             }
             is FeedMutation.Replace -> {
@@ -1873,46 +2021,69 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun hideKeyboard() {
-        val manager = getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager
-        currentFocus?.let { manager.hideSoftInputFromWindow(it.windowToken, 0) }
+        cancelPendingComposerFocus()
+        dismissMentionSuggestions()
+        // Use the activity window even if a feed item took focus or focus was cleared.
+        WindowCompat.getInsetsController(window, window.decorView)
+            .hide(WindowInsetsCompat.Type.ime())
     }
 
     private fun focusMessageInputForEdit() {
-        messageInput.post {
-            requestMessageInputFocus()
-            messageInput.postDelayed(::requestMessageInputFocus, EDIT_FOCUS_REASSERT_MS)
-        }
+        val postId = viewModel.messageEdit.value?.postId ?: return
+        scheduleComposerFocus { viewModel.messageEdit.value?.postId == postId }
     }
 
     private fun focusMessageInputForShare() {
-        messageInput.post {
-            if (viewModel.messageEdit.value != null) return@post
-            messageInput.isFocusableInTouchMode = true
-            messageInput.requestFocus()
-            messageInput.setSelection(messageInput.text.length)
-            WindowCompat.getInsetsController(window, messageInput)
-                .show(WindowInsetsCompat.Type.ime())
-            val manager = getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager
-            manager.showSoftInput(messageInput, InputMethodManager.SHOW_IMPLICIT)
-        }
+        scheduleComposerFocus { viewModel.messageEdit.value == null }
     }
 
-    private fun requestMessageInputFocus() {
-        if (viewModel.messageEdit.value == null) return
-        messageInput.isFocusableInTouchMode = true
-        messageInput.requestFocus()
-        messageInput.setSelection(messageInput.text.length)
-        WindowCompat.getInsetsController(window, messageInput)
-            .show(WindowInsetsCompat.Type.ime())
-        val manager = getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager
-        manager.showSoftInput(messageInput, InputMethodManager.SHOW_IMPLICIT)
+    private fun scheduleComposerFocus(stillValid: () -> Boolean) {
+        cancelPendingComposerFocus()
+        val conversationId = (viewModel.screen.value as? ScreenState.Conversation)?.id ?: return
+        val request = Runnable {
+            pendingComposerFocus = null
+            if (
+                messageInput.isShown &&
+                !viewModel.messageSearch.value.active &&
+                (viewModel.screen.value as? ScreenState.Conversation)?.id == conversationId &&
+                stillValid()
+            ) {
+                messageInput.requestFocus()
+                messageInput.setSelection(messageInput.text.length)
+                WindowCompat.getInsetsController(window, messageInput)
+                    .show(WindowInsetsCompat.Type.ime())
+            }
+            updateKeyboardFocusHandling()
+        }
+        pendingComposerFocus = request
+        updateKeyboardFocusHandling()
+        // Run after the message's long-press dispatch has finished assigning focus.
+        messageInput.post(request)
+    }
+
+    private fun cancelPendingComposerFocus() {
+        pendingComposerFocus?.let(messageInput::removeCallbacks)
+        pendingComposerFocus = null
+        updateKeyboardFocusHandling()
+    }
+
+    private fun updateKeyboardFocusHandling() {
+        keyboardBackCallback.isEnabled = imeVisible || pendingComposerFocus != null
+        // Selectable message bodies must not become the IME target during touch typing.
+        // Restore normal selection and keyboard navigation when composition is inactive.
+        messageList.descendantFocusability = if (
+            messageInput.hasFocus() && messageInput.isInTouchMode && keyboardBackCallback.isEnabled
+        ) {
+            ViewGroup.FOCUS_BLOCK_DESCENDANTS
+        } else {
+            ViewGroup.FOCUS_AFTER_DESCENDANTS
+        }
     }
 
     private companion object {
         const val VIDEO_CONNECT_TIMEOUT_MS = 10_000
         const val VIDEO_READ_TIMEOUT_MS = 20_000
         const val EDIT_FOCUS_HOLD_MS = 800L
-        const val EDIT_FOCUS_REASSERT_MS = 140L
         const val EXTRA_BENCHMARK_MESSAGE_COUNT = "benchmark_message_count"
         const val EXTRA_BENCHMARK_SCREEN = "benchmark_screen"
         const val STATE_SCROLL_ITEM_KEY = "scroll_item_key"
