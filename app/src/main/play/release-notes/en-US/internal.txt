@@ -1,1 +1,1 @@
-Stays signed in when a reconnect fails instead of asking for your password again. Your own DM now appears pinned at the top of the direct messages. Failed messages stay retryable after switching conversations, and tapping a notification opens the right message. Also includes security hardening for shared files.
+Video files now show a preview thumbnail in the conversation, so you can see what a clip is before playing it. New thumbnails load on Wi-Fi; on mobile data, videos you have not previewed yet keep the plain file card.
