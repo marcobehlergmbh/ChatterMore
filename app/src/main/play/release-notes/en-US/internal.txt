@@ -1,1 +1,1 @@
-Choose a channel or DM when sharing files from another app. Search for a destination before uploading, then review the attachments and tap Send. Existing drafts are protected when switching conversations.
+Stays signed in when a reconnect fails instead of asking for your password again. Your own DM now appears pinned at the top of the direct messages. Failed messages stay retryable after switching conversations, and tapping a notification opens the right message. Also includes security hardening for shared files.
