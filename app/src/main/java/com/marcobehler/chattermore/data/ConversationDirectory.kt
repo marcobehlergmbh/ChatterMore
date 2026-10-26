@@ -30,7 +30,7 @@ internal fun buildConversationDirectory(
                     ConversationSummary(
                         channel = channel,
                         kind = ConversationKind.DIRECT_MESSAGE,
-                        title = peer?.displayName ?: peerId,
+                        title = directMessageTitle(peer?.displayName ?: peerId, peerId, currentUserId),
                         peerUserId = peerId,
                         peerUsername = peer?.username,
                         unread = unread,
@@ -61,10 +61,26 @@ internal fun buildConversationDirectory(
     return (channelsSection + directSection).toList()
 }
 
+// A DM with yourself is named "<id>__<id>"; its peer is the current user.
 internal fun directMessagePeerId(channelName: String, currentUserId: String): String? =
     channelName.split("__", limit = 2)
         .takeIf { it.size == 2 }
-        ?.firstOrNull { it.isNotBlank() && it != currentUserId }
+        ?.let { ids ->
+            ids.firstOrNull { it.isNotBlank() && it != currentUserId }
+                ?: currentUserId.takeIf { it.isNotBlank() && ids.all { id -> id == it } }
+        }
+
+internal fun directMessageTitle(name: String, peerId: String, currentUserId: String): String =
+    if (peerId == currentUserId) "$name (you)" else name
+
+internal fun hasSelfDirectMessage(
+    channels: Collection<MattermostChannel>,
+    currentUserId: String,
+): Boolean = channels.any {
+    it.type.equals("D", ignoreCase = true) &&
+        it.deleteAt == 0L &&
+        directMessagePeerId(it.name, currentUserId) == currentUserId
+}
 
 internal fun directMessagePeerIds(
     channels: Collection<MattermostChannel>,

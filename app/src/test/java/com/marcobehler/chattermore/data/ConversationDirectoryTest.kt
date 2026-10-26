@@ -53,6 +53,32 @@ class ConversationDirectoryTest {
     }
 
     @Test
+    fun `direct message with yourself is listed with the current user as peer`() {
+        assertEquals("me", directMessagePeerId("me__me", "me"))
+        assertEquals(null, directMessagePeerId("__", ""))
+
+        val channels = listOf(
+            channel("dm-alice", "me__alice", "", "D", lastPostAt = 20),
+            channel("dm-self", "me__me", "", "D", lastPostAt = 10),
+        )
+        val result = buildConversationDirectory(
+            channels = channels,
+            memberships = emptyList(),
+            currentUserId = "me",
+            users = listOf(
+                MattermostUser("alice", "alice", "Alice", "A"),
+                MattermostUser("me", "marco", "Marco", "B"),
+            ),
+        )
+
+        assertEquals(listOf("dm-alice", "dm-self"), result.map(ConversationSummary::id))
+        assertEquals("me", result.last().peerUserId)
+        assertEquals("Marco B (you)", result.last().title)
+        assertTrue(hasSelfDirectMessage(channels, "me"))
+        assertFalse(hasSelfDirectMessage(channels.take(1), "me"))
+    }
+
+    @Test
     fun `inactive posts update one summary and only other users mark it unread`() {
         val summary = ConversationSummary(
             channel = channel("channel", "channel", "Channel", "O", lastPostAt = 10),

@@ -190,7 +190,19 @@ class ChannelRepository(
                     runCatching { api.uploadCapabilities(config) }
                         .getOrDefault(UploadCapabilities())
                 }
-                val channels = channelsRequest.await()
+                val channels = channelsRequest.await().let { fetched ->
+                    if (hasSelfDirectMessage(fetched, currentUser.id)) {
+                        fetched
+                    } else {
+                        // Mattermost creates the DM with yourself on first use; create it
+                        // up front so you always appear in the direct-message list.
+                        fetched + listOfNotNull(
+                            runCatching {
+                                api.directChannel(config, currentUser.id, currentUser.id)
+                            }.getOrNull(),
+                        )
+                    }
+                }
                 val peerIds = directMessagePeerIds(channels, currentUser.id)
                 val peers = if (peerIds.isEmpty()) emptyList() else api.users(config, peerIds)
                 addMentionUsers(peers)
@@ -1082,7 +1094,7 @@ class ChannelRepository(
         var summary = ConversationSummary(
             channel = channel.copy(type = channel.type.ifBlank { "D" }),
             kind = ConversationKind.DIRECT_MESSAGE,
-            title = peer.displayName,
+            title = directMessageTitle(peer.displayName, peer.id, currentUser.id),
             peerUserId = peer.id,
             peerUsername = peer.username,
         )
