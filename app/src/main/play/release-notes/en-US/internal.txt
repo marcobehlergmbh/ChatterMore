@@ -1,1 +1,1 @@
-Video files now show a preview thumbnail in the conversation, so you can see what a clip is before playing it. New thumbnails load on Wi-Fi; on mobile data, videos you have not previewed yet keep the plain file card.
+Fixes video preview thumbnails not appearing on servers that do not support partial downloads. Video files show a preview thumbnail in the conversation; new thumbnails load on Wi-Fi.
