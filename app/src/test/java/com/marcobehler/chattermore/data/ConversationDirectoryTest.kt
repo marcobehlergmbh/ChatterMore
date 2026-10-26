@@ -53,7 +53,7 @@ class ConversationDirectoryTest {
     }
 
     @Test
-    fun `direct message with yourself is listed with the current user as peer`() {
+    fun `direct message with yourself is pinned first with the current user as peer`() {
         assertEquals("me", directMessagePeerId("me__me", "me"))
         assertEquals(null, directMessagePeerId("__", ""))
 
@@ -71,9 +71,9 @@ class ConversationDirectoryTest {
             ),
         )
 
-        assertEquals(listOf("dm-alice", "dm-self"), result.map(ConversationSummary::id))
-        assertEquals("me", result.last().peerUserId)
-        assertEquals("Marco B (you)", result.last().title)
+        assertEquals(listOf("dm-self", "dm-alice"), result.map(ConversationSummary::id))
+        assertEquals("me", result.first().peerUserId)
+        assertEquals("Marco B (you)", result.first().title)
         assertTrue(hasSelfDirectMessage(channels, "me"))
         assertFalse(hasSelfDirectMessage(channels.take(1), "me"))
     }

@@ -55,7 +55,8 @@ internal fun buildConversationDirectory(
     val directSection = summaries.asSequence()
         .filter { it.kind == ConversationKind.DIRECT_MESSAGE }
         .sortedWith(
-            compareByDescending<ConversationSummary> { it.lastPostAt }
+            compareByDescending<ConversationSummary> { it.peerUserId == currentUserId }
+                .thenByDescending { it.lastPostAt }
                 .thenBy { it.title.lowercase(Locale.ROOT) },
         )
     return (channelsSection + directSection).toList()
