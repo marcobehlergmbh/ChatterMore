@@ -3,10 +3,13 @@ package com.marcobehler.chattermore.network
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.media.MediaDataSource
 import android.media.MediaMetadataRetriever
+import android.net.ConnectivityManager
 import android.net.Uri
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.util.LruCache
 import com.marcobehler.chattermore.model.FeedImage
 import com.marcobehler.chattermore.model.AuthenticatedServerConfig
@@ -22,6 +25,7 @@ import java.io.ByteArrayOutputStream
 import java.io.IOException
 import java.io.File
 import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.min
 import kotlin.math.roundToInt
@@ -45,8 +49,10 @@ class MattermostImageLoader(
     private val diskCache = ImageDiskCache(File(context.filesDir, "image_cache"), MAX_DISK_CACHE_BYTES)
     private val diskExecutor = Executors.newFixedThreadPool(DISK_CACHE_THREADS)
     private val videoFrameExecutor = Executors.newFixedThreadPool(VIDEO_FRAME_THREADS)
+    private val connectivity = context.getSystemService(ConnectivityManager::class.java)
     private val inFlight = mutableMapOf<String, PendingLoad>()
     private val failedVideoFrames = mutableSetOf<String>()
+    private val videoFrameRetryAt = mutableMapOf<String, Long>()
     private val imageClient = client.newBuilder()
         .dispatcher(
             Dispatcher().apply {
@@ -54,6 +60,9 @@ class MattermostImageLoader(
                 maxRequestsPerHost = MAX_NETWORK_REQUESTS
             },
         )
+        .build()
+    private val videoFrameClient = imageClient.newBuilder()
+        .callTimeout(VIDEO_FRAME_CALL_TIMEOUT_SECONDS, TimeUnit.SECONDS)
         .build()
 
     init {
@@ -86,6 +95,7 @@ class MattermostImageLoader(
             inFlight.values.forEach { it.call?.cancel() }
             inFlight.clear()
             failedVideoFrames.clear()
+            videoFrameRetryAt.clear()
             memoryCache.evictAll()
         }
     }
@@ -179,25 +189,52 @@ class MattermostImageLoader(
 
     /**
      * Mattermost only renders previews for images, so video thumbnails are grabbed from the file
-     * itself. MediaMetadataRetriever streams just the ranges it needs to decode a single frame.
+     * itself. New frames are only fetched on unmetered networks and within a fixed byte budget;
+     * frames already on disk are shown everywhere.
      */
     fun loadVideoThumbnail(fileId: String, result: (Bitmap?) -> Unit): ImageRequest {
         val requestConfig = config ?: return emptyResult(result)
-        if (fileId.isBlank()) return emptyResult(result)
-        val url = requestConfig.baseUrl.toHttpUrl().newBuilder()
-            .addPathSegments("api/v4/files")
-            .addPathSegment(fileId)
-            .build()
-        if (url.scheme != "https") return emptyResult(result)
-        val key = "${requestConfig.baseUrl}|video-frame|$fileId"
-        if (synchronized(lock) { key in failedVideoFrames }) return emptyResult(result)
-        val headers = mapOf("Authorization" to "Bearer ${requestConfig.token}")
+        val url = videoFrameUrl(requestConfig, fileId) ?: return emptyResult(result)
+        val key = videoFrameKey(requestConfig, fileId)
+        if (isVideoFrameSkipped(key)) return emptyResult(result)
+        val authorization = "Bearer ${requestConfig.token}"
         return loadCached(key, key, targetWidth, targetHeight, result) {
+            val pending = synchronized(lock) { inFlight[key] } ?: return@loadCached
+            if (isNetworkMetered()) {
+                complete(key, null, pending)
+                return@loadCached
+            }
             videoFrameExecutor.execute {
-                extractVideoFrame(key, url.toString(), headers, targetWidth, targetHeight)
+                extractVideoFrame(key, pending, url, authorization, targetWidth, targetHeight)
             }
         }
     }
+
+    /** Whether a missing thumbnail would be fetched now, so callers can reserve space for it. */
+    fun canFetchVideoThumbnail(fileId: String): Boolean {
+        val requestConfig = config ?: return false
+        if (videoFrameUrl(requestConfig, fileId) == null) return false
+        return !isVideoFrameSkipped(videoFrameKey(requestConfig, fileId)) && !isNetworkMetered()
+    }
+
+    private fun videoFrameUrl(requestConfig: AuthenticatedServerConfig, fileId: String): okhttp3.HttpUrl? {
+        if (fileId.isBlank()) return null
+        return requestConfig.baseUrl.toHttpUrl().newBuilder()
+            .addPathSegments("api/v4/files")
+            .addPathSegment(fileId)
+            .build()
+            .takeIf { it.scheme == "https" }
+    }
+
+    private fun videoFrameKey(requestConfig: AuthenticatedServerConfig, fileId: String) =
+        "${requestConfig.baseUrl}|video-frame|$fileId"
+
+    private fun isVideoFrameSkipped(key: String): Boolean = synchronized(lock) {
+        key in failedVideoFrames || (videoFrameRetryAt[key] ?: 0L) > SystemClock.elapsedRealtime()
+    }
+
+    // Treats "can't tell" as metered: thumbnails are a nicety, mobile data isn't.
+    private fun isNetworkMetered(): Boolean = connectivity?.isActiveNetworkMetered != false
 
     fun mediaSource(fileId: String): MattermostMediaSource? {
         val requestConfig = config ?: return null
@@ -344,27 +381,55 @@ class MattermostImageLoader(
         )
     }
 
+    /**
+     * Only [pending] may be completed: after configure() or a cancel-and-rebind it has been
+     * replaced, and a result fetched for it would leak into a load it doesn't belong to.
+     */
     private fun extractVideoFrame(
         key: String,
-        url: String,
-        headers: Map<String, String>,
+        pending: PendingLoad,
+        url: okhttp3.HttpUrl,
+        authorization: String,
         decodeWidth: Int,
         decodeHeight: Int,
     ) {
+        val isCurrent = { synchronized(lock) { inFlight[key] === pending } }
         // Every subscriber may have scrolled away while this sat in the queue.
-        if (synchronized(lock) { key !in inFlight }) return
-        val bytes = try {
-            grabVideoFrame(url, headers, decodeWidth, decodeHeight)
+        if (!isCurrent()) return
+        val source = RangeMediaDataSource(
+            client = videoFrameClient,
+            url = url,
+            authorization = authorization,
+            byteBudget = VIDEO_FRAME_BYTE_BUDGET,
+            isWanted = isCurrent,
+        )
+        val frame = try {
+            grabVideoFrame(source, decodeWidth, decodeHeight)
         } catch (_: Exception) {
             null
+        } finally {
+            source.close()
         }
-        if (bytes == null) {
-            synchronized(lock) { failedVideoFrames += key }
-            complete(key, null)
+        if (frame != null) {
+            val bytes = ByteArrayOutputStream().use { output ->
+                frame.compress(Bitmap.CompressFormat.JPEG, VIDEO_FRAME_JPEG_QUALITY, output)
+                output.toByteArray()
+            }
+            diskCache.write(key, bytes)
+            complete(key, frame, pending)
             return
         }
-        diskCache.write(key, bytes)
-        complete(key, decodeSampled(bytes, decodeWidth, decodeHeight))
+        if (source.cancelled) return
+        synchronized(lock) {
+            if (inFlight[key] !== pending) return
+            if (source.transientFailure) {
+                videoFrameRetryAt[key] = SystemClock.elapsedRealtime() + VIDEO_FRAME_RETRY_DELAY_MS
+            } else {
+                // Undecodable, over budget, or rejected by the server: don't try again this session.
+                failedVideoFrames += key
+            }
+        }
+        complete(key, null, pending)
     }
 
     private fun emptyResult(result: (Bitmap?) -> Unit): ImageRequest {
@@ -372,9 +437,11 @@ class MattermostImageLoader(
         return EMPTY_REQUEST
     }
 
-    private fun complete(key: String, bitmap: Bitmap?) {
+    private fun complete(key: String, bitmap: Bitmap?, expected: PendingLoad? = null) {
         val subscriptions = synchronized(lock) {
-            val pending = inFlight.remove(key) ?: return
+            val pending = inFlight[key] ?: return
+            if (expected != null && pending !== expected) return
+            inFlight.remove(key)
             if (bitmap != null) memoryCache.put(key, bitmap)
             pending.subscriptions.toList()
         }
@@ -458,6 +525,9 @@ class MattermostImageLoader(
         const val MAX_DISK_CACHE_BYTES = 128L * 1_024L * 1_024L
         const val DISK_CACHE_THREADS = 2
         const val VIDEO_FRAME_THREADS = 2
+        const val VIDEO_FRAME_CALL_TIMEOUT_SECONDS = 30L
+        const val VIDEO_FRAME_BYTE_BUDGET = 8L * 1_024L * 1_024L
+        const val VIDEO_FRAME_RETRY_DELAY_MS = 60_000L
         const val VIDEO_FRAME_TIME_MS = 1_000L
         const val VIDEO_FRAME_JPEG_QUALITY = 85
         const val MAX_ENCODED_BYTES = 24 * 1_024 * 1_024
@@ -499,32 +569,22 @@ class MattermostImageLoader(
             )
         }
 
-        fun grabVideoFrame(
-            url: String,
-            headers: Map<String, String>,
-            targetWidth: Int,
-            targetHeight: Int,
-        ): ByteArray? {
+        fun grabVideoFrame(source: MediaDataSource, targetWidth: Int, targetHeight: Int): Bitmap? {
             val retriever = MediaMetadataRetriever()
             try {
-                retriever.setDataSource(url, headers)
+                retriever.setDataSource(source)
                 // Skip ahead a little: the very first frame is often a black fade-in.
                 val durationMs = retriever
                     .extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
                     ?.toLongOrNull()
                     ?: 0L
                 val timeUs = min(VIDEO_FRAME_TIME_MS, durationMs / 3) * 1_000L
-                val frame = retriever.getScaledFrameAtTime(
+                return retriever.getScaledFrameAtTime(
                     timeUs,
                     MediaMetadataRetriever.OPTION_CLOSEST_SYNC,
                     targetWidth,
                     targetHeight,
-                ) ?: return null
-                return ByteArrayOutputStream().use { output ->
-                    frame.compress(Bitmap.CompressFormat.JPEG, VIDEO_FRAME_JPEG_QUALITY, output)
-                    frame.recycle()
-                    output.toByteArray()
-                }
+                )
             } finally {
                 runCatching { retriever.release() }
             }

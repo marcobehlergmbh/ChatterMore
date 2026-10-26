@@ -70,6 +70,7 @@ class MessageFileListView @JvmOverloads constructor(
         private val image: ImageView,
     ) {
         private var fileId: String? = null
+        private var loaded = false
         private var request: MattermostImageLoader.ImageRequest? = null
 
         fun bind(loader: MattermostImageLoader, file: FeedFile) {
@@ -77,22 +78,35 @@ class MessageFileListView @JvmOverloads constructor(
                 clear()
                 return
             }
-            if (fileId == file.fileId) return
-            clear()
+            if (fileId == file.fileId && loaded) return
+            if (fileId != file.fileId) clear()
             val boundId = file.fileId
             fileId = boundId
-            preview.visibility = View.VISIBLE
+            // Only hold space for a frame that is actually on its way; a cached one pops in when
+            // read, and anything else (mobile data, undecodable, retry pending) stays a plain row.
+            preview.visibility = if (loader.canFetchVideoThumbnail(boundId)) View.VISIBLE else View.GONE
+            // Ask again even for the same file: a load dropped by configure() never calls back, and
+            // a skipped one may succeed now. Subscribing before cancelling the previous request
+            // lets the loader keep a fetch that is still running.
+            val previous = request
             request = loader.loadVideoThumbnail(boundId) { bitmap ->
                 if (fileId != boundId) return@loadVideoThumbnail
-                // Frames from codecs the device can't decode fall back to the plain file card.
-                if (bitmap == null) preview.visibility = View.GONE else image.setImageBitmap(bitmap)
+                if (bitmap == null) {
+                    preview.visibility = View.GONE
+                } else {
+                    loaded = true
+                    image.setImageBitmap(bitmap)
+                    preview.visibility = View.VISIBLE
+                }
             }
+            previous?.cancel()
         }
 
         fun clear() {
             request?.cancel()
             request = null
             fileId = null
+            loaded = false
             image.setImageDrawable(null)
             preview.visibility = View.GONE
         }
