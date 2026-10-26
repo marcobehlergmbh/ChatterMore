@@ -260,7 +260,11 @@ class MainViewModel(
         closeMessageSearch()
         messageSearchCache.clear()
         searchUsersById.clear()
-        if (persist && container.configStore.backgroundPollingSettings().enabled) {
+        if (
+            persist &&
+            container.configStore.backgroundPollingSettings().enabled &&
+            !isRememberedAccount(config)
+        ) {
             backgroundSettingsGeneration++
             BackgroundPollingScheduler.cancel(container.context)
             container.configStore.setBackgroundPollingSettings(
@@ -307,16 +311,22 @@ class MainViewModel(
                     authenticatedUser = null
                     authenticatedTeam = null
                     overviewScreen = null
-                    if (!persist) {
-                        BackgroundPollingScheduler.cancel(container.context)
-                        container.configStore.clearCredentials()
-                    }
+                    // A failed automatic reconnect is often transient, so keep the saved
+                    // credentials and let the user retry without re-entering the password.
                     _screen.value = ScreenState.Setup(
-                        config = config.copy(password = ""),
+                        config = if (persist) config.copy(password = "") else config,
                         error = userMessage(error),
                     )
                 }
         }
+    }
+
+    private fun isRememberedAccount(config: ServerConfig): Boolean {
+        val remembered = container.configStore.loadRememberedServer() ?: return false
+        val normalized = runCatching { container.api.normalizedConfig(config) }.getOrNull()
+            ?: return false
+        return normalized.baseUrl == remembered.baseUrl &&
+            normalized.username.equals(remembered.username, ignoreCase = true)
     }
 
     fun clearConnection() {
