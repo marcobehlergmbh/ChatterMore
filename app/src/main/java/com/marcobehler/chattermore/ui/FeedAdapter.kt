@@ -491,7 +491,7 @@ class FeedAdapter(
                     it.onFileClick = onFileClick
                 }
                 fileView.visibility = View.VISIBLE
-                fileView.setFiles(item.files)
+                fileView.setFiles(imageLoader, item.files)
             }
             body.paintFlags = bodyPaintFlags
             state.visibility = View.GONE

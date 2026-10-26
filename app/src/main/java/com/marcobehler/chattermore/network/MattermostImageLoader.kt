@@ -3,6 +3,7 @@ package com.marcobehler.chattermore.network
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.os.Handler
 import android.os.Looper
@@ -43,7 +44,9 @@ class MattermostImageLoader(
     private val memoryCache: LruCache<String, Bitmap>
     private val diskCache = ImageDiskCache(File(context.filesDir, "image_cache"), MAX_DISK_CACHE_BYTES)
     private val diskExecutor = Executors.newFixedThreadPool(DISK_CACHE_THREADS)
+    private val videoFrameExecutor = Executors.newFixedThreadPool(VIDEO_FRAME_THREADS)
     private val inFlight = mutableMapOf<String, PendingLoad>()
+    private val failedVideoFrames = mutableSetOf<String>()
     private val imageClient = client.newBuilder()
         .dispatcher(
             Dispatcher().apply {
@@ -82,6 +85,7 @@ class MattermostImageLoader(
         synchronized(lock) {
             inFlight.values.forEach { it.call?.cancel() }
             inFlight.clear()
+            failedVideoFrames.clear()
             memoryCache.evictAll()
         }
     }
@@ -173,6 +177,28 @@ class MattermostImageLoader(
         )
     }
 
+    /**
+     * Mattermost only renders previews for images, so video thumbnails are grabbed from the file
+     * itself. MediaMetadataRetriever streams just the ranges it needs to decode a single frame.
+     */
+    fun loadVideoThumbnail(fileId: String, result: (Bitmap?) -> Unit): ImageRequest {
+        val requestConfig = config ?: return emptyResult(result)
+        if (fileId.isBlank()) return emptyResult(result)
+        val url = requestConfig.baseUrl.toHttpUrl().newBuilder()
+            .addPathSegments("api/v4/files")
+            .addPathSegment(fileId)
+            .build()
+        if (url.scheme != "https") return emptyResult(result)
+        val key = "${requestConfig.baseUrl}|video-frame|$fileId"
+        if (synchronized(lock) { key in failedVideoFrames }) return emptyResult(result)
+        val headers = mapOf("Authorization" to "Bearer ${requestConfig.token}")
+        return loadCached(key, key, targetWidth, targetHeight, result) {
+            videoFrameExecutor.execute {
+                extractVideoFrame(key, url.toString(), headers, targetWidth, targetHeight)
+            }
+        }
+    }
+
     fun mediaSource(fileId: String): MattermostMediaSource? {
         val requestConfig = config ?: return null
         if (fileId.isBlank()) return null
@@ -224,6 +250,28 @@ class MattermostImageLoader(
         maxEncodedBytes: Int = MAX_ENCODED_BYTES,
         requireImageContentType: Boolean = false,
         result: (Bitmap?) -> Unit,
+    ): ImageRequest = loadCached(key, diskKey, decodeWidth, decodeHeight, result) {
+        startNetworkLoad(
+            key = key,
+            diskKey = diskKey,
+            url = url,
+            authorization = authorization,
+            accept = accept,
+            decodeWidth = decodeWidth,
+            decodeHeight = decodeHeight,
+            maxEncodedBytes = maxEncodedBytes,
+            requireImageContentType = requireImageContentType,
+        )
+    }
+
+    /** Serves [key] from memory or disk, falling back to [fetch], which must end in [complete]. */
+    private fun loadCached(
+        key: String,
+        diskKey: String,
+        decodeWidth: Int,
+        decodeHeight: Int,
+        result: (Bitmap?) -> Unit,
+        fetch: () -> Unit,
     ): ImageRequest {
         synchronized(lock) {
             memoryCache.get(key)?.let {
@@ -255,17 +303,7 @@ class MattermostImageLoader(
                     complete(key, cachedBitmap)
                 } else {
                     if (cachedBytes != null) diskCache.remove(diskKey)
-                    startNetworkLoad(
-                        key = key,
-                        diskKey = diskKey,
-                        url = url,
-                        authorization = authorization,
-                        accept = accept,
-                        decodeWidth = decodeWidth,
-                        decodeHeight = decodeHeight,
-                        maxEncodedBytes = maxEncodedBytes,
-                        requireImageContentType = requireImageContentType,
-                    )
+                    fetch()
                 }
             }
         }
@@ -304,6 +342,29 @@ class MattermostImageLoader(
                 requireImageContentType,
             ),
         )
+    }
+
+    private fun extractVideoFrame(
+        key: String,
+        url: String,
+        headers: Map<String, String>,
+        decodeWidth: Int,
+        decodeHeight: Int,
+    ) {
+        // Every subscriber may have scrolled away while this sat in the queue.
+        if (synchronized(lock) { key !in inFlight }) return
+        val bytes = try {
+            grabVideoFrame(url, headers, decodeWidth, decodeHeight)
+        } catch (_: Exception) {
+            null
+        }
+        if (bytes == null) {
+            synchronized(lock) { failedVideoFrames += key }
+            complete(key, null)
+            return
+        }
+        diskCache.write(key, bytes)
+        complete(key, decodeSampled(bytes, decodeWidth, decodeHeight))
     }
 
     private fun emptyResult(result: (Bitmap?) -> Unit): ImageRequest {
@@ -396,6 +457,9 @@ class MattermostImageLoader(
         const val MAX_MEMORY_CACHE_KB = 32 * 1_024
         const val MAX_DISK_CACHE_BYTES = 128L * 1_024L * 1_024L
         const val DISK_CACHE_THREADS = 2
+        const val VIDEO_FRAME_THREADS = 2
+        const val VIDEO_FRAME_TIME_MS = 1_000L
+        const val VIDEO_FRAME_JPEG_QUALITY = 85
         const val MAX_ENCODED_BYTES = 24 * 1_024 * 1_024
         const val MAX_LINK_PREVIEW_ENCODED_BYTES = 6 * 1_024 * 1_024
         val EMPTY_REQUEST = ImageRequest {}
@@ -433,6 +497,37 @@ class MattermostImageLoader(
                     }
                 },
             )
+        }
+
+        fun grabVideoFrame(
+            url: String,
+            headers: Map<String, String>,
+            targetWidth: Int,
+            targetHeight: Int,
+        ): ByteArray? {
+            val retriever = MediaMetadataRetriever()
+            try {
+                retriever.setDataSource(url, headers)
+                // Skip ahead a little: the very first frame is often a black fade-in.
+                val durationMs = retriever
+                    .extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
+                    ?.toLongOrNull()
+                    ?: 0L
+                val timeUs = min(VIDEO_FRAME_TIME_MS, durationMs / 3) * 1_000L
+                val frame = retriever.getScaledFrameAtTime(
+                    timeUs,
+                    MediaMetadataRetriever.OPTION_CLOSEST_SYNC,
+                    targetWidth,
+                    targetHeight,
+                ) ?: return null
+                return ByteArrayOutputStream().use { output ->
+                    frame.compress(Bitmap.CompressFormat.JPEG, VIDEO_FRAME_JPEG_QUALITY, output)
+                    frame.recycle()
+                    output.toByteArray()
+                }
+            } finally {
+                runCatching { retriever.release() }
+            }
         }
 
         fun okhttp3.ResponseBody.readBoundedBytes(limit: Int): ByteArray? {
